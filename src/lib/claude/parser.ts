@@ -26,7 +26,7 @@ function claudeUsage(message: JsonRecord) {
   };
 }
 
-export function parseClaudeJsonl(content: string, sessionPath: string): CodexSession | null {
+export function parseClaudeJsonl(content: string, sessionPath: string, seenMessageIds: Set<string>): CodexSession | null {
   const lines = content.split(/\r?\n/);
   const sessionId = basename(sessionPath, ".jsonl");
   let model: string | null = null;
@@ -37,7 +37,6 @@ export function parseClaudeJsonl(content: string, sessionPath: string): CodexSes
   let inputTokens = 0;
   let outputTokens = 0;
   let cachedInputTokens = 0;
-  const seenMessageIds = new Set<string>();
 
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -109,6 +108,25 @@ async function listJsonlFiles(directory: string): Promise<string[]> {
 export async function readLocalClaudeSessions() {
   const root = resolve(process.env.CLAUDE_CONFIG_DIR?.replace(/^~(?=$|\/)/, homedir()) ?? join(homedir(), ".claude"), "projects");
   const files = await listJsonlFiles(root);
-  const sessions = await Promise.all(files.map(async (file) => parseClaudeJsonl(await fs.readFile(file, "utf8"), file)));
-  return sessions.filter((session): session is CodexSession => session !== null);
+
+  // Resuming a Claude Code session writes a *new* file that re-embeds the
+  // entire prior transcript before continuing - the same assistant messages
+  // (and their tokens) then exist in both the original file and every
+  // resumed continuation. Deduping per-file (as parseClaudeJsonl does on its
+  // own) doesn't catch this since it's genuinely two different files; this
+  // walks files oldest-first with one shared seen-set so a message counts
+  // once, credited to whichever file it actually appeared in first.
+  const withMtime = await Promise.all(
+    files.map(async (file) => ({ file, mtime: (await fs.stat(file)).mtime })),
+  );
+  withMtime.sort((a, b) => a.mtime.getTime() - b.mtime.getTime());
+
+  const seenMessageIds = new Set<string>();
+  const sessions: CodexSession[] = [];
+  for (const { file } of withMtime) {
+    const content = await fs.readFile(file, "utf8");
+    const session = parseClaudeJsonl(content, file, seenMessageIds);
+    if (session) sessions.push(session);
+  }
+  return sessions;
 }

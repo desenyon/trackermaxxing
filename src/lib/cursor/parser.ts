@@ -24,10 +24,12 @@ const estimateTokens = (chars: number) => Math.ceil(chars / CHARS_PER_TOKEN);
 
 // No single call can be billed for more than the model's context window, no
 // matter how long the conversation has run - once history would exceed it, the
-// agent has already summarized/dropped older turns. 200K tokens covers every
-// model Cursor defaults to; capping here is what keeps a 4,000-turn agent loop
-// from estimating into the billions instead of tracking real, bounded usage.
-const MAX_CONTEXT_CHARS = 200_000 * CHARS_PER_TOKEN;
+// agent has already summarized/dropped older turns. Calibrated against Cursor's
+// own composerHeaders.contextUsagePercent (the % of context in use it reports
+// per conversation): back-solving window size = impliedTokens / (pct/100)
+// across real sessions here clusters at a median of ~150K tokens once tool
+// results are excluded from the char count - use that instead of guessing.
+const MAX_CONTEXT_CHARS = 150_000 * CHARS_PER_TOKEN;
 // Long-running agent loops don't sit pinned at the ceiling forever either - like
 // Claude Code and other agent harnesses, they compact/summarize history once the
 // window fills, then keep growing from a much smaller base. Modeling a hard cap
@@ -35,10 +37,21 @@ const MAX_CONTEXT_CHARS = 200_000 * CHARS_PER_TOKEN;
 // so once the cap is hit, collapse back to this fraction of it.
 const COMPACTION_RATIO = 0.3;
 
-function bubbleContentChars(payload: JsonRecord): number {
-  let chars = typeof payload.text === "string" ? payload.text.length : 0;
-  if (payload.toolFormerData) chars += JSON.stringify(payload.toolFormerData).length;
-  return chars;
+// toolFormerData.result is the tool's return value - file contents, command
+// output, search hits - fed back to the model as *input* on the next turn, not
+// something the model generated. Only text and the call itself (params) are
+// genuinely this turn's output; folding result in too (as an earlier version
+// did) inflated output tokens by ~4x here, since a single large command/file
+// read can dwarf everything else in the conversation combined.
+function bubbleChars(payload: JsonRecord): { ownOutputChars: number; contextChars: number } {
+  const textChars = typeof payload.text === "string" ? payload.text.length : 0;
+  const toolFormerData = asRecord(payload.toolFormerData);
+  const paramsChars = typeof toolFormerData?.params === "string" ? toolFormerData.params.length : 0;
+  const resultChars = typeof toolFormerData?.result === "string" ? toolFormerData.result.length : 0;
+  return {
+    ownOutputChars: textChars + paramsChars,
+    contextChars: textChars + paramsChars + resultChars,
+  };
 }
 
 function cursorDbPath() {
@@ -110,21 +123,21 @@ export function readCursorTokenSessions(): CodexSession[] {
       const tokenCount = asRecord(payload.tokenCount);
       const exactInput = asNumber(tokenCount?.inputTokens);
       const exactOutput = asNumber(tokenCount?.outputTokens);
-      const ownChars = bubbleContentChars(payload);
+      const { ownOutputChars, contextChars } = bubbleChars(payload);
 
       if (exactInput + exactOutput > 0) {
         inputTokens += exactInput;
         outputTokens += exactOutput;
         turnCount += 1;
-        cumulativeChars += ownChars;
+        cumulativeChars += contextChars;
         continue;
       }
 
       if (payload.type === 2) {
         // Assistant turn: input is everything accumulated so far (the re-sent
-        // context), output is only this turn's newly generated content.
+        // context), output is only what the model itself generated this turn.
         const turnInput = estimateTokens(Math.min(cumulativeChars, MAX_CONTEXT_CHARS));
-        const turnOutput = estimateTokens(ownChars);
+        const turnOutput = estimateTokens(ownOutputChars);
         if (turnInput + turnOutput > 0) {
           inputTokens += turnInput;
           outputTokens += turnOutput;
@@ -132,8 +145,10 @@ export function readCursorTokenSessions(): CodexSession[] {
         }
       }
 
-      const grown = cumulativeChars + ownChars;
-      cumulativeChars = grown > MAX_CONTEXT_CHARS ? MAX_CONTEXT_CHARS * COMPACTION_RATIO + ownChars : grown;
+      // The tool result (if any) still becomes part of what gets re-sent as
+      // input on future turns, even though it isn't this turn's output.
+      const grown = cumulativeChars + contextChars;
+      cumulativeChars = grown > MAX_CONTEXT_CHARS ? MAX_CONTEXT_CHARS * COMPACTION_RATIO + contextChars : grown;
     }
 
     if (inputTokens + outputTokens === 0) continue;

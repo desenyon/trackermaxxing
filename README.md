@@ -10,15 +10,15 @@ A fast terminal dashboard for your **Codex**, **Claude Code**, **Cursor**, and *
                                                           |___/
 
 LIFETIME TOKENS    TOKENS TODAY    EST. LIFETIME COST    SESSIONS
-9.9B               3.0B            $20,751.45            210
+6.5B               874.1M          $14,597.42            181
 
 ── AI usage ────────────────────────────────────────────────────
 ┌──────────┬─────────────┬─────────────┬────────────────┐
 │          │    Lifetime │    Last 30d │ Last 30d trend │
 ├──────────┼─────────────┼─────────────┼────────────────┤
-│  CODEX   │        3.2B │        2.8B │ ▁▁▁▁▁▁▁█       │
-│  CLAUDE  │        2.6B │        2.5B │ ▁█▁▆▁▁▁▁▁▁▅    │
-│  CURSOR  │        4.1B │        1.3B │ ▂▁▂▁█▂▁▂▄▁▄▁▁  │
+│  CODEX   │        1.6B │        1.2B │ ▂▁▁▁▂▂▁█       │
+│  CLAUDE  │        2.1B │          2B │ ▁█▁▆▁▁▁▁▁▁▂    │
+│  CURSOR  │        2.8B │        881M │ ▂▁▂▁█▂▁▂▅▁▅▁▁  │
 └──────────┴─────────────┴─────────────┴────────────────┘
 ```
 
@@ -79,7 +79,7 @@ trackermaxxing export json --out report.json   # or `export csv`
 |---|---|---|
 | Codex | `~/.codex/sessions/**/*.jsonl` | Exact token counts, straight from Codex's own session logs |
 | Claude Code | `~/.claude/**/*.jsonl` | Exact token counts, straight from Claude Code's own session logs |
-| Cursor | `~/Library/Application Support/Cursor/.../state.vscdb` | Cursor stopped exposing exact per-call token counts locally. Usage is reconstructed from actual message + tool-call content, modeling the same cumulative-context-per-turn behavior Codex/Claude report (capped at a realistic context-window size, with compaction once it fills) — the same *shape* of accounting, not a guess pulled from nowhere. Exact billed usage is only on cursor.com/dashboard. |
+| Cursor | `~/Library/Application Support/Cursor/.../state.vscdb` | Cursor stopped exposing exact per-call token counts locally. Usage is reconstructed from message + tool-call content, modeling the same cumulative-context-per-turn behavior Codex/Claude report - only what the model itself generated counts as output (tool *results*, e.g. a file read or command's output, are input on the next turn, not this turn's output), capped at a context-window size calibrated against Cursor's own `contextUsagePercent` field. Exact billed usage is only on cursor.com/dashboard. |
 | GitHub | `api.github.com` (Events API) | Commits, PRs opened/merged, reviews, issues — not Copilot. |
 
 Everything is cached in a local SQLite file at `~/.trackermaxxing/data.db`, so repeat runs are instant. `trackermaxxing sync` re-scans your local files and upserts — safe to run as often as you like.

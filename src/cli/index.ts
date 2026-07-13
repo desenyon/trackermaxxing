@@ -15,7 +15,7 @@ const program = new Command();
 program
   .name("trackermaxxing")
   .description("A fast terminal dashboard for your Codex, Claude, Cursor, and GitHub activity.")
-  .version("0.3.0");
+  .version("0.4.0");
 
 program
   .command("report", { isDefault: true })

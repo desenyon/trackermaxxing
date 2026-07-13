@@ -1,6 +1,6 @@
 {
   "name": "trackermaxxing",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A fast terminal dashboard for your Codex, Claude, Cursor, and GitHub activity.",
   "type": "module",
   "bin": {
