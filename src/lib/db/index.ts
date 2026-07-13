@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 
 import { bootstrapSql } from "./bootstrap-sql";
+import { migrateAiSessionsIdentity } from "./migrate-ai-sessions";
 import * as schema from "./schema";
 
 const databasePath = resolve(
@@ -16,6 +17,7 @@ mkdirSync(dirname(databasePath), { recursive: true });
 const sqlite = new Database(databasePath);
 sqlite.pragma("journal_mode = WAL");
 sqlite.pragma("foreign_keys = ON");
+migrateAiSessionsIdentity(sqlite);
 sqlite.exec(bootstrapSql);
 
 export const db = drizzle(sqlite, { schema });

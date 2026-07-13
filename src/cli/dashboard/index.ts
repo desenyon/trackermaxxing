@@ -2,7 +2,7 @@ import { render } from "ink";
 import { createElement } from "react";
 
 import { getUnifiedOverview } from "@/lib/ai/service";
-import { getGithubActivityOverview } from "@/lib/github/activity";
+import { getGithubActivityOverview, getGithubLifetimeTotals } from "@/lib/github/activity";
 
 import { App } from "./App";
 
@@ -14,7 +14,7 @@ export async function runDashboard(options: { days: number }) {
   const instance = render(
     createElement(App, {
       days: options.days,
-      loaders: { getAi: getUnifiedOverview, getGithub: getGithubActivityOverview },
+      loaders: { getAi: getUnifiedOverview, getGithub: getGithubActivityOverview, getGithubLifetime: getGithubLifetimeTotals },
     }),
   );
   await instance.waitUntilExit();

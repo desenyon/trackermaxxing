@@ -5,7 +5,7 @@ import figlet from "figlet";
 import gradient from "gradient-string";
 
 import type { getUnifiedOverview } from "@/lib/ai/service";
-import type { getGithubActivityOverview } from "@/lib/github/activity";
+import type { getGithubActivityOverview, GithubLifetimeTotals } from "@/lib/github/activity";
 
 import { bar, compactNumber, currency, pad, sparkline } from "./format";
 import { accent, dim, good, heading, providerBadge, providerColor } from "./theme";
@@ -61,7 +61,7 @@ function windowTotals(daily: AiOverview["daily"], provider: string) {
   return { tokens, sessions };
 }
 
-export function renderSnapshot(ai: AiOverview, github: GithubOverview, options: { lastSynced?: Date; days?: number } = {}) {
+export function renderSnapshot(ai: AiOverview, github: GithubOverview, options: { lastSynced?: Date; days?: number; githubLifetime?: GithubLifetimeTotals | null } = {}) {
   const days = options.days ?? 30;
   const lines: string[] = [];
   lines.push(banner());
@@ -99,20 +99,34 @@ export function renderSnapshot(ai: AiOverview, github: GithubOverview, options: 
   lines.push(providerTable.toString());
   lines.push("");
 
-  lines.push(sectionTitle("GitHub activity · last 90 days"));
-  const ghStats = [
-    ["Commits", github.totals.commits],
-    ["PRs opened", github.totals.prsOpened],
-    ["PRs merged", github.totals.prsMerged],
-    ["Reviews", github.totals.prsReviewed],
-    ["Issues", github.totals.issuesOpened],
+  lines.push(sectionTitle("GitHub activity"));
+  const lifetime = options.githubLifetime;
+  const ghRows = [
+    ["Commits", lifetime?.commits, github.totals.commits],
+    ["PRs opened", lifetime?.prsOpened, github.totals.prsOpened],
+    ["PRs merged", lifetime?.prsMerged, github.totals.prsMerged],
+    ["Reviews", lifetime?.reviews, github.totals.prsReviewed],
+    ["Issues", lifetime?.issuesOpened, github.totals.issuesOpened],
   ] as const;
-  lines.push(statRow(ghStats.map(([label, value]) => ({ label, value: compactNumber(value) }))));
+  const ghTable = new Table({
+    head: ["", "Lifetime", "Last 90d"].map((h) => heading(h)),
+    style: { head: [], border: [] },
+    colAligns: ["left", "right", "right"],
+  });
+  for (const [label, lifetimeValue, windowValue] of ghRows) {
+    ghTable.push([
+      dim(label),
+      heading(lifetimeValue === undefined ? "—" : compactNumber(lifetimeValue)),
+      heading(compactNumber(windowValue)),
+    ]);
+  }
+  lines.push(ghTable.toString());
+  if (!lifetime) lines.push(dim("Lifetime totals need one `trackermaxxing sync` with GitHub connected."));
 
   const ghTrend = github.daily.slice(-30).map((row) => row.commits);
   if (ghTrend.some((v) => v > 0)) {
     lines.push("");
-    lines.push(`${dim("commits")}  ${accent(sparkline(ghTrend))}`);
+    lines.push(`${dim("commits, last 30d")}  ${accent(sparkline(ghTrend))}`);
   }
   lines.push("");
 

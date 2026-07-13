@@ -27,8 +27,9 @@ export const bootstrapSql = `
     input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
     cached_input_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     estimated_cost_usd REAL NOT NULL DEFAULT 0, turn_count INTEGER NOT NULL DEFAULT 0,
-    source_file_hash TEXT NOT NULL UNIQUE
+    source_file_hash TEXT NOT NULL
   );
+  CREATE UNIQUE INDEX IF NOT EXISTS ai_sessions_provider_path_unique ON ai_sessions(provider, session_path);
   CREATE INDEX IF NOT EXISTS ai_sessions_provider_index ON ai_sessions(provider);
   CREATE TABLE IF NOT EXISTS ai_daily_rollups (
     date TEXT NOT NULL, provider TEXT NOT NULL, input_tokens INTEGER NOT NULL DEFAULT 0,

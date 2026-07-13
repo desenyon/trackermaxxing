@@ -54,7 +54,10 @@ export const aiSessions = sqliteTable(
     sourceFileHash: text("source_file_hash").notNull(),
   },
   (table) => [
-    uniqueIndex("ai_sessions_source_hash_unique").on(table.sourceFileHash),
+    // Identity is (provider, sessionPath), not content hash - a session file's
+    // hash changes every time it grows, so hashing content would insert a new
+    // row per sync instead of updating the same session in place.
+    uniqueIndex("ai_sessions_provider_path_unique").on(table.provider, table.sessionPath),
     index("ai_sessions_provider_index").on(table.provider),
   ],
 );

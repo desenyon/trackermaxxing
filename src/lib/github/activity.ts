@@ -2,6 +2,7 @@ import { desc, gte, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { githubActivityDaily, githubSyncLog } from "@/lib/db/schema";
+import { getMeta, setMeta } from "@/lib/settings/meta";
 import { readSecret } from "@/lib/settings/secure-store";
 
 type JsonRecord = Record<string, unknown>;
@@ -32,6 +33,42 @@ async function githubFetch(path: string, token: string) {
 
 async function logSync(source: string, status: "success" | "error", rows: number, error?: string) {
   await db.insert(githubSyncLog).values({ source, day: dayKey(new Date()), status, rowsIngested: rows, error, completedAt: new Date() });
+}
+
+// The Events API this app otherwise uses only paginates back ~300 events
+// (roughly 90 days) - that's a GitHub platform limit, not a bug, and there's
+// no way to page further. The Search API indexes full history instead, so
+// true lifetime totals come from `total_count` on a handful of search queries.
+export type GithubLifetimeTotals = { commits: number; prsOpened: number; prsMerged: number; reviews: number; issuesOpened: number; login: string; syncedAt: string };
+const LIFETIME_META_KEY = "github.lifetime_totals";
+
+async function searchCount(query: string, token: string): Promise<number> {
+  const payload = await githubFetch(`/search/${query}&per_page=1`, token) as { total_count?: number };
+  return payload.total_count ?? 0;
+}
+
+async function syncGithubLifetimeTotals(login: string, token: string) {
+  const q = (query: string) => encodeURIComponent(query);
+  const [commits, prsOpened, prsMerged, reviews, issuesOpened] = await Promise.all([
+    searchCount(`commits?q=${q(`author:${login}`)}`, token),
+    searchCount(`issues?q=${q(`author:${login} type:pr`)}`, token),
+    searchCount(`issues?q=${q(`author:${login} type:pr is:merged`)}`, token),
+    searchCount(`issues?q=${q(`reviewed-by:${login} type:pr`)}`, token),
+    searchCount(`issues?q=${q(`author:${login} type:issue`)}`, token),
+  ]);
+  const totals: GithubLifetimeTotals = { commits, prsOpened, prsMerged, reviews, issuesOpened, login, syncedAt: new Date().toISOString() };
+  await setMeta(LIFETIME_META_KEY, JSON.stringify(totals));
+  return totals;
+}
+
+export async function getGithubLifetimeTotals(): Promise<GithubLifetimeTotals | null> {
+  const setting = await getMeta(LIFETIME_META_KEY);
+  if (!setting) return null;
+  try {
+    return JSON.parse(setting.value) as GithubLifetimeTotals;
+  } catch {
+    return null;
+  }
 }
 
 export async function syncGithubActivity(days = 90) {
@@ -103,6 +140,13 @@ export async function syncGithubActivity(days = 90) {
       set: metrics,
     });
     rowsIngested += 1;
+  }
+
+  try {
+    await syncGithubLifetimeTotals(login, token);
+  } catch {
+    // Lifetime totals are a bonus on top of the daily activity sync above -
+    // don't fail the whole sync if the Search API rate-limits or hiccups.
   }
 
   await logSync("github-activity", "success", rowsIngested);

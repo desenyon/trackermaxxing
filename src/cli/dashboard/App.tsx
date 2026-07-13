@@ -2,7 +2,7 @@ import { Box, Text, useApp, useInput } from "ink";
 import { useCallback, useEffect, useState } from "react";
 
 import type { getUnifiedOverview } from "@/lib/ai/service";
-import type { getGithubActivityOverview } from "@/lib/github/activity";
+import type { getGithubActivityOverview, GithubLifetimeTotals } from "@/lib/github/activity";
 
 import { runSync } from "../commands/sync";
 import { bar, compactNumber, currency, sparkline } from "../render/format";
@@ -66,18 +66,21 @@ export function App({ days, loaders }: {
   loaders: {
     getAi: (days: number) => Promise<AiOverview>;
     getGithub: (days: number) => Promise<GithubOverview>;
+    getGithubLifetime: () => Promise<GithubLifetimeTotals | null>;
   };
 }) {
   const { exit } = useApp();
   const [ai, setAi] = useState<AiOverview | null>(null);
   const [github, setGithub] = useState<GithubOverview | null>(null);
+  const [githubLifetime, setGithubLifetime] = useState<GithubLifetimeTotals | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [status, setStatus] = useState<string>("Loading…");
 
   const refresh = useCallback(async () => {
-    const [nextAi, nextGithub] = await Promise.all([loaders.getAi(days), loaders.getGithub(days)]);
+    const [nextAi, nextGithub, nextGithubLifetime] = await Promise.all([loaders.getAi(days), loaders.getGithub(days), loaders.getGithubLifetime()]);
     setAi(nextAi);
     setGithub(nextGithub);
+    setGithubLifetime(nextGithubLifetime);
     setLastUpdated(new Date());
     setStatus("");
   }, [days, loaders]);
@@ -170,14 +173,25 @@ export function App({ days, loaders }: {
       </Box>
 
       <Box marginTop={1} flexDirection="column">
-        <Text bold>── GitHub activity · last 90d</Text>
-        <Box>
-          <Stat label="Commits" value={compactNumber(github.totals.commits)} />
-          <Stat label="PRs opened" value={compactNumber(github.totals.prsOpened)} />
-          <Stat label="PRs merged" value={compactNumber(github.totals.prsMerged)} />
-          <Stat label="Reviews" value={compactNumber(github.totals.prsReviewed)} />
-          <Stat label="Issues" value={compactNumber(github.totals.issuesOpened)} />
-        </Box>
+        <Text bold>── GitHub activity</Text>
+        {[
+          ["Commits", githubLifetime?.commits, github.totals.commits],
+          ["PRs opened", githubLifetime?.prsOpened, github.totals.prsOpened],
+          ["PRs merged", githubLifetime?.prsMerged, github.totals.prsMerged],
+          ["Reviews", githubLifetime?.reviews, github.totals.prsReviewed],
+          ["Issues", githubLifetime?.issuesOpened, github.totals.issuesOpened],
+        ].map(([label, lifetimeValue, windowValue]) => (
+          <Box key={label as string}>
+            <Box width={14}><Text dimColor>{label}</Text></Box>
+            <Box width={20}>
+              <Text dimColor>lifetime </Text>
+              <Text bold>{lifetimeValue === undefined ? "—" : compactNumber(lifetimeValue as number)}</Text>
+            </Box>
+            <Text dimColor>last 90d </Text>
+            <Text bold>{compactNumber(windowValue as number)}</Text>
+          </Box>
+        ))}
+        {!githubLifetime && <Text dimColor>Lifetime totals need one sync with GitHub connected (press s).</Text>}
       </Box>
 
       <Box marginTop={1}>

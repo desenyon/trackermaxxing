@@ -5,6 +5,7 @@ import { githubCreateRepo } from "./commands/github-create-repo";
 import { githubLogin } from "./commands/github-login";
 import { runRateLimits } from "./commands/rate-limits";
 import { runReport } from "./commands/report";
+import { runSessions } from "./commands/sessions";
 import { runSetup } from "./commands/setup";
 import { runSync } from "./commands/sync";
 import { renderError } from "./render/snapshot";
@@ -75,6 +76,16 @@ github
   .option("--push", "push the current directory as the initial commit")
   .action(async (name: string, options: { public?: boolean; private?: boolean; description?: string; push?: boolean }) => {
     await githubCreateRepo(name, { private: !options.public, description: options.description, push: options.push });
+  });
+
+program
+  .command("sessions")
+  .description("List the sessions behind your token totals, largest first - for auditing a number that looks off")
+  .option("--provider <name>", "filter to codex, claude, or cursor")
+  .option("--limit <n>", "how many to show", (value) => Number.parseInt(value, 10), 20)
+  .option("--json", "output raw JSON")
+  .action(async (options: { provider?: string; limit: number; json: boolean }) => {
+    await runSessions(options);
   });
 
 program

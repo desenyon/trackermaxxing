@@ -1,4 +1,4 @@
-import { desc, gte, sql } from "drizzle-orm";
+import { desc, eq, gte, sql } from "drizzle-orm";
 
 import type { CodexSession } from "@/lib/codex/parser";
 import { db } from "@/lib/db";
@@ -8,6 +8,11 @@ const dayKey = (date: Date) => date.toISOString().slice(0, 10);
 
 export async function upsertAiSessions(provider: string, sessions: CodexSession[]) {
   for (const session of sessions) {
+    // Identity is the session file's path, not its content hash. Codex/Claude
+    // session files are appended to while a session is active, so the same
+    // still-growing session hashes differently on every sync - keying on
+    // content used to insert a brand new row each time instead of updating the
+    // existing one, silently multi-counting the same conversation.
     await db.insert(aiSessions).values({
       id: session.id,
       provider,
@@ -24,10 +29,9 @@ export async function upsertAiSessions(provider: string, sessions: CodexSession[
       turnCount: session.turnCount,
       sourceFileHash: `${provider}:${session.sourceFileHash}`,
     }).onConflictDoUpdate({
-      target: aiSessions.sourceFileHash,
+      target: [aiSessions.provider, aiSessions.sessionPath],
       set: {
         id: session.id,
-        sessionPath: session.sessionPath,
         firstActivity: session.firstActivity,
         lastActivity: session.lastActivity,
         model: session.model,
@@ -38,6 +42,7 @@ export async function upsertAiSessions(provider: string, sessions: CodexSession[
         reasoningTokens: session.reasoningTokens,
         estimatedCostUsd: session.estimatedCostUsd,
         turnCount: session.turnCount,
+        sourceFileHash: `${provider}:${session.sourceFileHash}`,
       },
     });
   }
@@ -118,4 +123,12 @@ export async function getUnifiedOverview(days = 90) {
     daily,
     recentSessions: await db.select().from(aiSessions).orderBy(desc(aiSessions.lastActivity)).limit(8),
   };
+}
+
+export async function getTopSessions(provider?: string, limit = 20) {
+  const query = db.select().from(aiSessions);
+  const rows = provider ? await query.where(eq(aiSessions.provider, provider)) : await query;
+  return rows
+    .sort((a, b) => (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens))
+    .slice(0, limit);
 }
