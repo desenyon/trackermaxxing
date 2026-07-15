@@ -1,4 +1,4 @@
-import { upsertAiSessions, refreshAiDailyRollups } from "@/lib/ai/service";
+import { reconcileAiSessions, refreshAiDailyRollups } from "@/lib/ai/service";
 import { readLocalClaudeSessions } from "@/lib/claude/parser";
 import { readLocalCodexSessions } from "@/lib/codex/parser";
 import { readLocalCursorSessions } from "@/lib/cursor/parser";
@@ -11,10 +11,10 @@ export async function syncAllLocalAi() {
   ]);
 
   const counts = {
-    codex: await upsertAiSessions("codex", codex),
-    claude: await upsertAiSessions("claude", claude),
-    cursor: await upsertAiSessions("cursor", cursor),
+    codex: reconcileAiSessions("codex", codex),
+    claude: reconcileAiSessions("claude", claude),
+    cursor: reconcileAiSessions("cursor", cursor),
   };
-  await refreshAiDailyRollups();
+  refreshAiDailyRollups();
   return { ...counts, discovered: codex.length + claude.length + cursor.length };
 }

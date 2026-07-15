@@ -1,4 +1,4 @@
-CREATE TABLE `ai_daily_rollups` (
+CREATE TABLE IF NOT EXISTS `ai_daily_rollups` (
 	`date` text NOT NULL,
 	`provider` text NOT NULL,
 	`input_tokens` integer DEFAULT 0 NOT NULL,
@@ -9,8 +9,8 @@ CREATE TABLE `ai_daily_rollups` (
 	`cost_usd` real DEFAULT 0 NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `ai_daily_rollups_date_provider_unique` ON `ai_daily_rollups` (`date`,`provider`);--> statement-breakpoint
-CREATE TABLE `ai_sessions` (
+CREATE UNIQUE INDEX IF NOT EXISTS `ai_daily_rollups_date_provider_unique` ON `ai_daily_rollups` (`date`,`provider`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `ai_sessions` (
 	`id` text PRIMARY KEY NOT NULL,
 	`provider` text NOT NULL,
 	`session_path` text NOT NULL,
@@ -27,15 +27,14 @@ CREATE TABLE `ai_sessions` (
 	`source_file_hash` text NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `ai_sessions_source_hash_unique` ON `ai_sessions` (`source_file_hash`);--> statement-breakpoint
-CREATE INDEX `ai_sessions_provider_index` ON `ai_sessions` (`provider`);--> statement-breakpoint
-CREATE TABLE `app_settings` (
+CREATE INDEX IF NOT EXISTS `ai_sessions_provider_index` ON `ai_sessions` (`provider`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `app_settings` (
 	`key` text PRIMARY KEY NOT NULL,
 	`value` text NOT NULL,
 	`updated_at` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE `codex_account_snapshots` (
+CREATE TABLE IF NOT EXISTS `codex_account_snapshots` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`timestamp` integer NOT NULL,
 	`account_id` text DEFAULT 'default' NOT NULL,
@@ -50,8 +49,8 @@ CREATE TABLE `codex_account_snapshots` (
 	`streak_days` integer
 );
 --> statement-breakpoint
-CREATE INDEX `codex_snapshots_timestamp_index` ON `codex_account_snapshots` (`timestamp`);--> statement-breakpoint
-CREATE TABLE `gh_activity_daily` (
+CREATE INDEX IF NOT EXISTS `codex_snapshots_timestamp_index` ON `codex_account_snapshots` (`timestamp`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `gh_activity_daily` (
 	`day` text NOT NULL,
 	`login` text NOT NULL,
 	`commits` integer DEFAULT 0 NOT NULL,
@@ -62,8 +61,8 @@ CREATE TABLE `gh_activity_daily` (
 	`push_events` integer DEFAULT 0 NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `gh_activity_daily_unique` ON `gh_activity_daily` (`day`,`login`);--> statement-breakpoint
-CREATE TABLE `gh_sync_log` (
+CREATE UNIQUE INDEX IF NOT EXISTS `gh_activity_daily_unique` ON `gh_activity_daily` (`day`,`login`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `gh_sync_log` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`source` text NOT NULL,
 	`day` text,

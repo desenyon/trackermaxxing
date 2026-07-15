@@ -10,10 +10,20 @@ export function migrateAiSessionsIdentity(sqlite: Database.Database) {
   const table = sqlite
     .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_sessions'")
     .get() as { sql: string } | undefined;
-  if (!table) return; // fresh install - bootstrapSql creates the correct table directly
-  if (!table.sql.includes("UNIQUE")) return; // already migrated
+  if (!table) return;
 
-  sqlite.exec(`
+  const hasInlineSourceHashIdentity = (sqlite.pragma("index_list('ai_sessions')") as Array<{
+    name: string;
+    origin: string;
+    unique: number;
+  }>).some((index) => {
+    if (index.origin !== "u" || index.unique !== 1) return false;
+    const columns = sqlite.pragma(`index_info('${index.name.replaceAll("'", "''")}')`) as Array<{ name: string }>;
+    return columns.length === 1 && columns[0]?.name === "source_file_hash";
+  });
+  if (!hasInlineSourceHashIdentity) return;
+
+  sqlite.transaction(() => sqlite.exec(`
     ALTER TABLE ai_sessions RENAME TO ai_sessions_pre_migration;
 
     CREATE TABLE ai_sessions (
@@ -42,5 +52,5 @@ export function migrateAiSessionsIdentity(sqlite: Database.Database) {
 
     CREATE UNIQUE INDEX ai_sessions_provider_path_unique ON ai_sessions(provider, session_path);
     CREATE INDEX ai_sessions_provider_index ON ai_sessions(provider);
-  `);
+  `))();
 }

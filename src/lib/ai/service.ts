@@ -1,4 +1,4 @@
-import { desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, notInArray, sql } from "drizzle-orm";
 
 import type { CodexSession } from "@/lib/codex/parser";
 import { db } from "@/lib/db";
@@ -6,14 +6,15 @@ import { aiDailyRollups, aiSessions } from "@/lib/db/schema";
 
 const dayKey = (date: Date) => date.toISOString().slice(0, 10);
 
-export async function upsertAiSessions(provider: string, sessions: CodexSession[]) {
-  for (const session of sessions) {
+export function reconcileAiSessions(provider: string, sessions: CodexSession[]) {
+  return db.transaction((tx) => {
+    for (const session of sessions) {
     // Identity is the session file's path, not its content hash. Codex/Claude
     // session files are appended to while a session is active, so the same
     // still-growing session hashes differently on every sync - keying on
     // content used to insert a brand new row each time instead of updating the
     // existing one, silently multi-counting the same conversation.
-    await db.insert(aiSessions).values({
+      tx.insert(aiSessions).values({
       id: session.id,
       provider,
       sessionPath: session.sessionPath,
@@ -28,7 +29,7 @@ export async function upsertAiSessions(provider: string, sessions: CodexSession[
       estimatedCostUsd: session.estimatedCostUsd,
       turnCount: session.turnCount,
       sourceFileHash: `${provider}:${session.sourceFileHash}`,
-    }).onConflictDoUpdate({
+      }).onConflictDoUpdate({
       target: [aiSessions.provider, aiSessions.sessionPath],
       set: {
         id: session.id,
@@ -44,43 +45,47 @@ export async function upsertAiSessions(provider: string, sessions: CodexSession[
         turnCount: session.turnCount,
         sourceFileHash: `${provider}:${session.sourceFileHash}`,
       },
-    });
-  }
-  return sessions.length;
+      }).run();
+    }
+
+    const providerRows = eq(aiSessions.provider, provider);
+    if (sessions.length === 0) {
+      tx.delete(aiSessions).where(providerRows).run();
+    } else {
+      tx.delete(aiSessions).where(and(
+        providerRows,
+        notInArray(aiSessions.sessionPath, sessions.map((session) => session.sessionPath)),
+      )).run();
+    }
+    return sessions.length;
+  });
 }
 
-export async function refreshAiDailyRollups() {
-  const sessions = await db.select().from(aiSessions);
-  const totals = new Map<string, typeof sessions>();
-  for (const session of sessions) {
-    const key = `${session.provider}:${dayKey(session.firstActivity)}`;
-    totals.set(key, [...(totals.get(key) ?? []), session]);
-  }
+export function refreshAiDailyRollups() {
+  return db.transaction((tx) => {
+    const sessions = tx.select().from(aiSessions).all();
+    const totals = new Map<string, typeof sessions>();
+    for (const session of sessions) {
+      const key = `${session.provider}:${dayKey(session.firstActivity)}`;
+      totals.set(key, [...(totals.get(key) ?? []), session]);
+    }
 
-  for (const [key, rows] of totals) {
-    const [provider, date] = key.split(":");
-    const sum = (field: keyof (typeof rows)[number]) => rows.reduce((total, row) => total + Number(row[field] ?? 0), 0);
-    await db.insert(aiDailyRollups).values({
-      date,
-      provider,
-      inputTokens: sum("inputTokens"),
-      outputTokens: sum("outputTokens"),
-      cachedTokens: sum("cachedInputTokens"),
-      sessionCount: rows.length,
-      turnCount: sum("turnCount"),
-      costUsd: sum("estimatedCostUsd"),
-    }).onConflictDoUpdate({
-      target: [aiDailyRollups.date, aiDailyRollups.provider],
-      set: {
+    tx.delete(aiDailyRollups).run();
+    for (const [key, rows] of totals) {
+      const [provider, date] = key.split(":");
+      const sum = (field: keyof (typeof rows)[number]) => rows.reduce((total, row) => total + Number(row[field] ?? 0), 0);
+      tx.insert(aiDailyRollups).values({
+        date,
+        provider,
         inputTokens: sum("inputTokens"),
         outputTokens: sum("outputTokens"),
         cachedTokens: sum("cachedInputTokens"),
         sessionCount: rows.length,
         turnCount: sum("turnCount"),
         costUsd: sum("estimatedCostUsd"),
-      },
-    });
-  }
+      }).run();
+    }
+  });
 }
 
 export async function getUnifiedOverview(days = 90) {
