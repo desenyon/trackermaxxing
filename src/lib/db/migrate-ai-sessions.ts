@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
 
-// ai_sessions originally had an inline UNIQUE constraint on source_file_hash
-// (a content hash), which SQLite can't drop with ALTER TABLE - it has to be
-// rebuilt. Existing installs also picked up duplicate rows from that bug
+// ai_sessions originally had a UNIQUE constraint or index on source_file_hash
+// (a content hash). Rebuild either legacy form so duplicate session paths can
+// be collapsed before the current provider/path unique index is applied.
+// Existing installs also picked up duplicate rows from that bug
 // (the same growing session file re-inserted on every sync instead of
 // updated in place), so this both migrates the schema and collapses those
 // duplicates down to the most complete row per (provider, session_path).
@@ -12,16 +13,16 @@ export function migrateAiSessionsIdentity(sqlite: Database.Database) {
     .get() as { sql: string } | undefined;
   if (!table) return;
 
-  const hasInlineSourceHashIdentity = (sqlite.pragma("index_list('ai_sessions')") as Array<{
+  const hasSourceHashIdentity = (sqlite.pragma("index_list('ai_sessions')") as Array<{
     name: string;
     origin: string;
     unique: number;
   }>).some((index) => {
-    if (index.origin !== "u" || index.unique !== 1) return false;
+    if (index.unique !== 1) return false;
     const columns = sqlite.pragma(`index_info('${index.name.replaceAll("'", "''")}')`) as Array<{ name: string }>;
     return columns.length === 1 && columns[0]?.name === "source_file_hash";
   });
-  if (!hasInlineSourceHashIdentity) return;
+  if (!hasSourceHashIdentity) return;
 
   sqlite.transaction(() => sqlite.exec(`
     ALTER TABLE ai_sessions RENAME TO ai_sessions_pre_migration;

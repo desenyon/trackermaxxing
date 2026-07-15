@@ -29,8 +29,8 @@ export function openDatabase(databasePath: string, migrationsFolder = locateMigr
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
 
-  // Pre-Drizzle releases used an inline UNIQUE(source_file_hash) constraint.
-  // Rebuild that one legacy shape first, then let checked-in migrations own
+  // Earlier releases used UNIQUE(source_file_hash), either inline or indexed.
+  // Rebuild those legacy shapes first, then let checked-in migrations own
   // every fresh and future schema change.
   migrateAiSessionsIdentity(sqlite);
 
