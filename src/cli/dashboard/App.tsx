@@ -187,7 +187,7 @@ export function App({ days, loaders }: {
               <Text dimColor>lifetime </Text>
               <Text bold>{lifetimeValue === undefined ? "—" : compactNumber(lifetimeValue as number)}</Text>
             </Box>
-            <Text dimColor>last 90d </Text>
+            <Text dimColor>last {days}d </Text>
             <Text bold>{compactNumber(windowValue as number)}</Text>
           </Box>
         ))}

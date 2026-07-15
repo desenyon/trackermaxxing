@@ -3,8 +3,15 @@ import { writeSecret } from "@/lib/settings/secure-store";
 
 import { dim, good } from "../render/theme";
 
+export function applyMaskedInput(value: string, char: string): { action: "continue" | "submit" | "cancel"; value: string } {
+  if (char === "\u0003") return { action: "cancel", value };
+  if (char === "\r" || char === "\n") return { action: "submit", value };
+  if (char === "\u007f" || char === "\b") return { action: "continue", value: value.slice(0, -1) };
+  return { action: "continue", value: value + char };
+}
+
 function promptMasked(question: string): Promise<string> {
-  return new Promise((resolvePromise) => {
+  return new Promise((resolvePromise, rejectPromise) => {
     process.stdout.write(question);
     const { stdin } = process;
     const wasRaw = stdin.isTTY ? stdin.isRaw : false;
@@ -13,15 +20,18 @@ function promptMasked(question: string): Promise<string> {
     if (!stdin.isTTY) {
       // Not an interactive terminal (piped input) - read a single line plainly.
       let buffered = "";
+      const finish = () => {
+        stdin.off("data", onData);
+        stdin.off("end", finish);
+        process.stdout.write("\n");
+        resolvePromise(buffered.split("\n")[0].trim());
+      };
       const onData = (chunk: Buffer) => {
         buffered += chunk.toString("utf8");
-        if (buffered.includes("\n")) {
-          stdin.off("data", onData);
-          process.stdout.write("\n");
-          resolvePromise(buffered.split("\n")[0].trim());
-        }
+        if (buffered.includes("\n")) finish();
       };
       stdin.on("data", onData);
+      stdin.on("end", finish);
       return;
     }
 
@@ -29,22 +39,26 @@ function promptMasked(question: string): Promise<string> {
     stdin.resume();
     stdin.setEncoding("utf8");
 
+    const cleanup = () => {
+      stdin.setRawMode(Boolean(wasRaw));
+      stdin.pause();
+      stdin.off("data", onData);
+      process.stdout.write("\n");
+    };
     const onData = (chunk: string) => {
       for (const char of chunk) {
-        if (char === "\r" || char === "\n") {
-          stdin.setRawMode(Boolean(wasRaw));
-          stdin.pause();
-          stdin.off("data", onData);
-          process.stdout.write("\n");
+        const next = applyMaskedInput(value, char);
+        value = next.value;
+        if (next.action === "submit") {
+          cleanup();
           resolvePromise(value.trim());
           return;
         }
-        if (char === "") process.exit(130); // Ctrl+C
-        if (char === "" || char === "\b") {
-          value = value.slice(0, -1);
-          continue;
+        if (next.action === "cancel") {
+          cleanup();
+          rejectPromise(new Error("GitHub login cancelled."));
+          return;
         }
-        value += char;
       }
     };
     stdin.on("data", onData);

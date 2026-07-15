@@ -80,9 +80,27 @@ trackermaxxing export json --out report.json   # or `export csv`
 | Codex | `~/.codex/sessions/**/*.jsonl` | Exact token counts, straight from Codex's own session logs |
 | Claude Code | `~/.claude/**/*.jsonl` | Exact token counts, straight from Claude Code's own session logs |
 | Cursor | `~/Library/Application Support/Cursor/.../state.vscdb` | Cursor stopped exposing exact per-call token counts locally. Usage is reconstructed from message + tool-call content, modeling the same cumulative-context-per-turn behavior Codex/Claude report - only what the model itself generated counts as output (tool *results*, e.g. a file read or command's output, are input on the next turn, not this turn's output), capped at a context-window size calibrated against Cursor's own `contextUsagePercent` field. Exact billed usage is only on cursor.com/dashboard. |
-| GitHub | `api.github.com` (Events API) | Commits, PRs opened/merged, reviews, issues — not Copilot. |
+| GitHub | `api.github.com` (Events + Search APIs) | Commits, PRs opened/merged, reviews, issues — not Copilot. The Events API exposes at most 300 events from the past 30 days; repeated syncs retain previously cached daily history, while lifetime totals come from Search. |
 
-Everything is cached in a local SQLite file at `~/.trackermaxxing/data.db`, so repeat runs are instant. `trackermaxxing sync` re-scans your local files and upserts — safe to run as often as you like.
+Everything is cached in a local SQLite file at `~/.trackermaxxing/data.db`, so repeat runs are instant. `trackermaxxing sync` reconciles the cache with the currently available source data — safe to run as often as you like.
+
+## Architecture
+
+TrackerMaxxing is a local-only CLI with one data path:
+
+```text
+Codex / Claude / Cursor files      GitHub APIs
+              │                        │
+              └──── parsers + sync adapters ────┐
+                                                ▼
+                                    SQLite + Drizzle migrations
+                                                │
+                                  aggregate query services
+                                                │
+                  snapshot report / Ink dashboard / JSON and CSV export
+```
+
+Checked-in Drizzle migrations are the single schema authority for both development and the built CLI. Local AI syncs reconcile source snapshots, then rebuild daily rollups from the canonical session rows so deleted or moved sessions cannot leave stale totals behind.
 
 ## Config
 
@@ -116,8 +134,11 @@ trackermaxxing github create-repo my-project --public --description "hi" --push
 
 ```bash
 npm run dev          # tsx src/cli/index.ts, no build step
+npm test             # deterministic unit and integration tests
+npm run test:coverage
 npm run typecheck
 npm run lint
+npm run build
 npm run db:seed      # demo data
 npm run db:purge-demo
 ```

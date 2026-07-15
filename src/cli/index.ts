@@ -8,6 +8,7 @@ import { runReport } from "./commands/report";
 import { runSessions } from "./commands/sessions";
 import { runSetup } from "./commands/setup";
 import { runSync } from "./commands/sync";
+import { positiveInteger } from "./options";
 import { renderError } from "./render/snapshot";
 
 const program = new Command();
@@ -21,7 +22,7 @@ program
   .command("report", { isDefault: true })
   .description("Print a snapshot report (default command)")
   .option("--json", "output raw JSON instead of a formatted report")
-  .option("--days <n>", "window size in days", (value) => Number.parseInt(value, 10), 30)
+  .option("--days <n>", "window size in days", positiveInteger, 30)
   .option("--no-sync", "skip syncing local files first, read from cache")
   .action(async (options: { json: boolean; days: number; sync: boolean }) => {
     await runReport({ json: options.json, days: options.days, sync: options.sync });
@@ -49,7 +50,7 @@ program
   .command("dashboard")
   .alias("dash")
   .description("Live, auto-refreshing terminal dashboard")
-  .option("--days <n>", "window size in days", (value) => Number.parseInt(value, 10), 30)
+  .option("--days <n>", "window size in days", positiveInteger, 30)
   .action(async (options: { days: number }) => {
     const { runDashboard } = await import("./dashboard/index");
     await runDashboard({ days: options.days });
@@ -82,7 +83,7 @@ program
   .command("sessions")
   .description("List the sessions behind your token totals, largest first - for auditing a number that looks off")
   .option("--provider <name>", "filter to codex, claude, or cursor")
-  .option("--limit <n>", "how many to show", (value) => Number.parseInt(value, 10), 20)
+  .option("--limit <n>", "how many to show", positiveInteger, 20)
   .option("--json", "output raw JSON")
   .action(async (options: { provider?: string; limit: number; json: boolean }) => {
     await runSessions(options);
@@ -101,7 +102,7 @@ program
   .description("Export usage data as json or csv")
   .argument("<format>", "json or csv")
   .option("--out <path>", "write to a file instead of stdout")
-  .option("--days <n>", "window size in days", (value) => Number.parseInt(value, 10), 365)
+  .option("--days <n>", "window size in days", positiveInteger, 365)
   .action(async (format: string, options: { out?: string; days: number }) => {
     if (format !== "json" && format !== "csv") throw new Error("Format must be json or csv.");
     await runExport(format, options);

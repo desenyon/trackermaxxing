@@ -6,6 +6,16 @@ import { getMeta, setMeta } from "@/lib/settings/meta";
 import { readSecret } from "@/lib/settings/secure-store";
 
 type JsonRecord = Record<string, unknown>;
+export const GITHUB_EVENT_HISTORY_DAYS = 30;
+
+export type GithubActivityMetrics = {
+  commits: number;
+  prsOpened: number;
+  prsMerged: number;
+  prsReviewed: number;
+  issuesOpened: number;
+  pushEvents: number;
+};
 
 const dayKey = (date: Date) => date.toISOString().slice(0, 10);
 
@@ -35,8 +45,8 @@ async function logSync(source: string, status: "success" | "error", rows: number
   await db.insert(githubSyncLog).values({ source, day: dayKey(new Date()), status, rowsIngested: rows, error, completedAt: new Date() });
 }
 
-// The Events API this app otherwise uses only paginates back ~300 events
-// (roughly 90 days) - that's a GitHub platform limit, not a bug, and there's
+// The Events API this app otherwise uses only exposes the most recent 300
+// events from the past 30 days - that's a GitHub platform limit, not a bug, and there's
 // no way to page further. The Search API indexes full history instead, so
 // true lifetime totals come from `total_count` on a handful of search queries.
 export type GithubLifetimeTotals = { commits: number; prsOpened: number; prsMerged: number; reviews: number; issuesOpened: number; login: string; syncedAt: string };
@@ -71,7 +81,44 @@ export async function getGithubLifetimeTotals(): Promise<GithubLifetimeTotals | 
   }
 }
 
-export async function syncGithubActivity(days = 90) {
+function numericMetric(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function pushCommitCount(payload: JsonRecord) {
+  return numericMetric(payload.distinct_size)
+    ?? numericMetric(payload.size)
+    ?? (Array.isArray(payload.commits) ? payload.commits.length : 0);
+}
+
+export function summarizeGithubEvents(events: JsonRecord[], since: Date) {
+  const totals = new Map<string, GithubActivityMetrics>();
+  for (const event of events) {
+    const createdAt = typeof event.created_at === "string" ? new Date(event.created_at) : null;
+    if (!createdAt || Number.isNaN(createdAt.getTime()) || createdAt < since) continue;
+    const day = dayKey(createdAt);
+    const bucket = totals.get(day) ?? { commits: 0, prsOpened: 0, prsMerged: 0, prsReviewed: 0, issuesOpened: 0, pushEvents: 0 };
+    const type = String(event.type ?? "");
+    const payload = (event.payload ?? {}) as JsonRecord;
+
+    if (type === "PushEvent") {
+      bucket.pushEvents += 1;
+      bucket.commits += pushCommitCount(payload);
+    }
+    if (type === "PullRequestEvent") {
+      const action = String(payload.action ?? "");
+      const pr = (payload.pull_request ?? {}) as JsonRecord;
+      if (action === "opened") bucket.prsOpened += 1;
+      if (action === "closed" && pr.merged === true) bucket.prsMerged += 1;
+    }
+    if (type === "PullRequestReviewEvent" && payload.action === "created") bucket.prsReviewed += 1;
+    if (type === "IssuesEvent" && payload.action === "opened") bucket.issuesOpened += 1;
+    totals.set(day, bucket);
+  }
+  return totals;
+}
+
+export async function syncGithubActivity(days = GITHUB_EVENT_HISTORY_DAYS) {
   const token = await githubToken();
   if (!token) throw new Error("GitHub token required. Set GITHUB_TOKEN or run `trackermaxxing github login`.");
 
@@ -82,14 +129,14 @@ export async function syncGithubActivity(days = 90) {
   }
   if (!login) throw new Error("Unable to resolve GitHub login.");
 
-  const totals = new Map<string, { commits: number; prsOpened: number; prsMerged: number; prsReviewed: number; issuesOpened: number; pushEvents: number }>();
+  const totals = new Map<string, GithubActivityMetrics>();
   const since = new Date();
-  since.setUTCDate(since.getUTCDate() - days);
+  since.setUTCDate(since.getUTCDate() - Math.min(days, GITHUB_EVENT_HISTORY_DAYS));
 
   let page = 1;
   while (page <= 10) {
-    // GitHub caps how far back the Events API paginates (roughly the last 300
-    // events) and returns a 422 once you're past it - that's "no more history
+    // GitHub caps the Events API at the last 300 events from the past 30 days
+    // and returns a 422 once you're past it - that's "no more history
     // available", not a real failure, so stop cleanly instead of throwing.
     const response = await fetch(`https://api.github.com/users/${login}/events?per_page=100&page=${page}`, {
       headers: {
@@ -105,27 +152,9 @@ export async function syncGithubActivity(days = 90) {
     const events = await response.json() as JsonRecord[];
     if (!Array.isArray(events) || events.length === 0) break;
 
-    for (const event of events) {
-      const createdAt = typeof event.created_at === "string" ? new Date(event.created_at) : null;
-      if (!createdAt || createdAt < since) continue;
-      const day = dayKey(createdAt);
+    for (const [day, metrics] of summarizeGithubEvents(events, since)) {
       const bucket = totals.get(day) ?? { commits: 0, prsOpened: 0, prsMerged: 0, prsReviewed: 0, issuesOpened: 0, pushEvents: 0 };
-      const type = String(event.type ?? "");
-      const payload = (event.payload ?? {}) as JsonRecord;
-
-      if (type === "PushEvent") {
-        bucket.pushEvents += 1;
-        const commits = Array.isArray(payload.commits) ? payload.commits.length : 0;
-        bucket.commits += commits;
-      }
-      if (type === "PullRequestEvent") {
-        const action = String(payload.action ?? "");
-        const pr = (payload.pull_request ?? {}) as JsonRecord;
-        if (action === "opened") bucket.prsOpened += 1;
-        if (action === "closed" && pr.merged === true) bucket.prsMerged += 1;
-      }
-      if (type === "PullRequestReviewEvent") bucket.prsReviewed += 1;
-      if (type === "IssuesEvent" && payload.action === "opened") bucket.issuesOpened += 1;
+      for (const key of Object.keys(metrics) as Array<keyof GithubActivityMetrics>) bucket[key] += metrics[key];
       totals.set(day, bucket);
     }
 

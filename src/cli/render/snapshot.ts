@@ -109,7 +109,7 @@ export function renderSnapshot(ai: AiOverview, github: GithubOverview, options: 
     ["Issues", lifetime?.issuesOpened, github.totals.issuesOpened],
   ] as const;
   const ghTable = new Table({
-    head: ["", "Lifetime", "Last 90d"].map((h) => heading(h)),
+    head: ["", "Lifetime", `Last ${days}d`].map((h) => heading(h)),
     style: { head: [], border: [] },
     colAligns: ["left", "right", "right"],
   });
