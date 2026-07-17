@@ -1,8 +1,9 @@
 import { writeFile } from "node:fs/promises";
 
 import { getUnifiedOverview } from "@/lib/ai/service";
-import { getGithubActivityOverview } from "@/lib/github/activity";
+import { getGithubActivityOverview, getGithubLifetimeTotals } from "@/lib/github/activity";
 
+import { renderHtmlReport } from "../render/html";
 import { good } from "../render/theme";
 
 function csvEscape(value: string | number) {
@@ -10,15 +11,18 @@ function csvEscape(value: string | number) {
   return /[",\n]/.test(text) ? `"${text.replaceAll("\"", "\"\"")}"` : text;
 }
 
-export async function runExport(format: "json" | "csv", options: { out?: string; days: number }) {
-  const [ai, github] = await Promise.all([
+export async function runExport(format: "json" | "csv" | "html", options: { out?: string; days: number }) {
+  const [ai, github, githubLifetime] = await Promise.all([
     getUnifiedOverview(options.days),
     getGithubActivityOverview(options.days),
+    getGithubLifetimeTotals(),
   ]);
 
   let output: string;
-  if (format === "json") {
-    output = JSON.stringify({ exportedAt: new Date().toISOString(), ai, github }, null, 2);
+  if (format === "html") {
+    output = renderHtmlReport(ai, github, { days: options.days, githubLifetime });
+  } else if (format === "json") {
+    output = JSON.stringify({ exportedAt: new Date().toISOString(), ai, github, githubLifetime }, null, 2);
   } else {
     const rows: Array<Array<string | number>> = [["section", "date", "metric", "value"]];
     for (const row of ai.daily) rows.push(["ai", row.date, `${row.provider}_tokens`, row.inputTokens + row.outputTokens]);

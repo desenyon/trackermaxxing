@@ -7,6 +7,7 @@ import { readSecret } from "@/lib/settings/secure-store";
 
 type JsonRecord = Record<string, unknown>;
 export const GITHUB_EVENT_HISTORY_DAYS = 30;
+export const GITHUB_DEFAULT_WINDOW_DAYS = 90;
 
 export type GithubActivityMetrics = {
   commits: number;
@@ -17,7 +18,29 @@ export type GithubActivityMetrics = {
   pushEvents: number;
 };
 
+export type GithubLifetimeTotals = {
+  commits: number;
+  prsOpened: number;
+  prsMerged: number;
+  reviews: number;
+  issuesOpened: number;
+  login: string;
+  syncedAt: string;
+};
+
+export type GithubWindowTotals = {
+  days: number;
+  commits: number;
+  prsOpened: number;
+  prsMerged: number;
+  reviews: number;
+  issuesOpened: number;
+  syncedAt: string;
+};
+
 const dayKey = (date: Date) => date.toISOString().slice(0, 10);
+const LIFETIME_META_KEY = "github.lifetime_totals";
+const WINDOW_META_KEY = "github.window_totals";
 
 async function githubToken() {
   return (await readSecret("github.metrics_token")) ?? process.env.GITHUB_TOKEN ?? null;
@@ -45,29 +68,41 @@ async function logSync(source: string, status: "success" | "error", rows: number
   await db.insert(githubSyncLog).values({ source, day: dayKey(new Date()), status, rowsIngested: rows, error, completedAt: new Date() });
 }
 
-// The Events API this app otherwise uses only exposes the most recent 300
-// events from the past 30 days - that's a GitHub platform limit, not a bug, and there's
-// no way to page further. The Search API indexes full history instead, so
-// true lifetime totals come from `total_count` on a handful of search queries.
-export type GithubLifetimeTotals = { commits: number; prsOpened: number; prsMerged: number; reviews: number; issuesOpened: number; login: string; syncedAt: string };
-const LIFETIME_META_KEY = "github.lifetime_totals";
-
-async function searchCount(query: string, token: string): Promise<number> {
-  const payload = await githubFetch(`/search/${query}&per_page=1`, token) as { total_count?: number };
+async function searchCount(endpoint: string, token: string): Promise<number> {
+  const payload = await githubFetch(`${endpoint}&per_page=1`, token) as { total_count?: number };
   return payload.total_count ?? 0;
 }
 
+function encodeQuery(query: string) {
+  return encodeURIComponent(query);
+}
+
 async function syncGithubLifetimeTotals(login: string, token: string) {
-  const q = (query: string) => encodeURIComponent(query);
   const [commits, prsOpened, prsMerged, reviews, issuesOpened] = await Promise.all([
-    searchCount(`commits?q=${q(`author:${login}`)}`, token),
-    searchCount(`issues?q=${q(`author:${login} type:pr`)}`, token),
-    searchCount(`issues?q=${q(`author:${login} type:pr is:merged`)}`, token),
-    searchCount(`issues?q=${q(`reviewed-by:${login} type:pr`)}`, token),
-    searchCount(`issues?q=${q(`author:${login} type:issue`)}`, token),
+    searchCount(`search/commits?q=${encodeQuery(`author:${login}`)}`, token),
+    searchCount(`search/issues?q=${encodeQuery(`author:${login} type:pr`)}`, token),
+    searchCount(`search/issues?q=${encodeQuery(`author:${login} type:pr is:merged`)}`, token),
+    searchCount(`search/issues?q=${encodeQuery(`reviewed-by:${login} type:pr`)}`, token),
+    searchCount(`search/issues?q=${encodeQuery(`author:${login} type:issue`)}`, token),
   ]);
   const totals: GithubLifetimeTotals = { commits, prsOpened, prsMerged, reviews, issuesOpened, login, syncedAt: new Date().toISOString() };
   await setMeta(LIFETIME_META_KEY, JSON.stringify(totals));
+  return totals;
+}
+
+export async function syncGithubWindowTotals(login: string, token: string, days = GITHUB_DEFAULT_WINDOW_DAYS) {
+  const since = new Date();
+  since.setUTCDate(since.getUTCDate() - days + 1);
+  const sinceKey = dayKey(since);
+  const [commits, prsOpened, prsMerged, reviews, issuesOpened] = await Promise.all([
+    searchCount(`search/commits?q=${encodeQuery(`author:${login} author-date:>=${sinceKey}`)}`, token),
+    searchCount(`search/issues?q=${encodeQuery(`author:${login} type:pr created:>=${sinceKey}`)}`, token),
+    searchCount(`search/issues?q=${encodeQuery(`author:${login} type:pr is:merged created:>=${sinceKey}`)}`, token),
+    searchCount(`search/issues?q=${encodeQuery(`reviewed-by:${login} type:pr created:>=${sinceKey}`)}`, token),
+    searchCount(`search/issues?q=${encodeQuery(`author:${login} type:issue created:>=${sinceKey}`)}`, token),
+  ]);
+  const totals: GithubWindowTotals = { days, commits, prsOpened, prsMerged, reviews, issuesOpened, syncedAt: new Date().toISOString() };
+  await setMeta(WINDOW_META_KEY, JSON.stringify(totals));
   return totals;
 }
 
@@ -81,14 +116,33 @@ export async function getGithubLifetimeTotals(): Promise<GithubLifetimeTotals | 
   }
 }
 
-function numericMetric(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+export async function getGithubWindowTotals(days = GITHUB_DEFAULT_WINDOW_DAYS): Promise<GithubWindowTotals | null> {
+  const setting = await getMeta(WINDOW_META_KEY);
+  if (!setting) return null;
+  try {
+    const parsed = JSON.parse(setting.value) as GithubWindowTotals;
+    return parsed.days === days ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
-function pushCommitCount(payload: JsonRecord) {
-  return numericMetric(payload.distinct_size)
-    ?? numericMetric(payload.size)
-    ?? (Array.isArray(payload.commits) ? payload.commits.length : 0);
+function numericMetric(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return null;
+}
+
+// GitHub's Events API often omits push payload sizes and commit arrays now.
+// Fall back to one commit per push so daily activity is not silently zeroed.
+export function pushCommitCount(payload: JsonRecord) {
+  const fromSize = numericMetric(payload.distinct_size) ?? numericMetric(payload.size);
+  if (fromSize && fromSize > 0) return fromSize;
+  if (Array.isArray(payload.commits) && payload.commits.length > 0) return payload.commits.length;
+  return 1;
 }
 
 export function summarizeGithubEvents(events: JsonRecord[], since: Date) {
@@ -118,6 +172,11 @@ export function summarizeGithubEvents(events: JsonRecord[], since: Date) {
   return totals;
 }
 
+function normalizeDailyRow<T extends { commits: number; pushEvents: number }>(row: T): T {
+  if (row.commits > 0 || row.pushEvents === 0) return row;
+  return { ...row, commits: row.pushEvents };
+}
+
 export async function syncGithubActivity(days = GITHUB_EVENT_HISTORY_DAYS) {
   const token = await githubToken();
   if (!token) throw new Error("GitHub token required. Set GITHUB_TOKEN or run `trackermaxxing github login`.");
@@ -135,9 +194,6 @@ export async function syncGithubActivity(days = GITHUB_EVENT_HISTORY_DAYS) {
 
   let page = 1;
   while (page <= 10) {
-    // GitHub caps the Events API at the last 300 events from the past 30 days
-    // and returns a 422 once you're past it - that's "no more history
-    // available", not a real failure, so stop cleanly instead of throwing.
     const response = await fetch(`https://api.github.com/users/${login}/events?per_page=100&page=${page}`, {
       headers: {
         Accept: "application/vnd.github+json",
@@ -173,28 +229,53 @@ export async function syncGithubActivity(days = GITHUB_EVENT_HISTORY_DAYS) {
 
   try {
     await syncGithubLifetimeTotals(login, token);
+    await syncGithubWindowTotals(login, token, GITHUB_DEFAULT_WINDOW_DAYS);
   } catch {
-    // Lifetime totals are a bonus on top of the daily activity sync above -
-    // don't fail the whole sync if the Search API rate-limits or hiccups.
+    // Search totals are additive; don't fail the event sync when rate-limited.
   }
 
   await logSync("github-activity", "success", rowsIngested);
   return { login, rowsIngested };
 }
 
-export async function getGithubActivityOverview(days = 90) {
+export async function getGithubActivityOverview(days = GITHUB_DEFAULT_WINDOW_DAYS) {
   const since = new Date();
   since.setUTCDate(since.getUTCDate() - days + 1);
-  const daily = await db.select().from(githubActivityDaily).where(gte(githubActivityDaily.day, dayKey(since))).orderBy(githubActivityDaily.day);
-  const [totals] = await db.select({
+  const sinceKey = dayKey(since);
+  const daily = (await db.select().from(githubActivityDaily).where(gte(githubActivityDaily.day, sinceKey)).orderBy(githubActivityDaily.day))
+    .map(normalizeDailyRow);
+
+  const [eventTotals] = await db.select({
     commits: sql<number>`coalesce(sum(${githubActivityDaily.commits}), 0)`,
     prsOpened: sql<number>`coalesce(sum(${githubActivityDaily.prsOpened}), 0)`,
     prsMerged: sql<number>`coalesce(sum(${githubActivityDaily.prsMerged}), 0)`,
     prsReviewed: sql<number>`coalesce(sum(${githubActivityDaily.prsReviewed}), 0)`,
     issuesOpened: sql<number>`coalesce(sum(${githubActivityDaily.issuesOpened}), 0)`,
-  }).from(githubActivityDaily).where(gte(githubActivityDaily.day, dayKey(since)));
+  }).from(githubActivityDaily).where(gte(githubActivityDaily.day, sinceKey));
 
-  return { daily, totals: totals ?? { commits: 0, prsOpened: 0, prsMerged: 0, prsReviewed: 0, issuesOpened: 0 } };
+  let totals = eventTotals ?? { commits: 0, prsOpened: 0, prsMerged: 0, prsReviewed: 0, issuesOpened: 0 };
+
+  const token = await githubToken();
+  const login = (await getGithubLifetimeTotals())?.login ?? await githubLogin();
+  if (token && login) {
+    try {
+      const searchTotals = days === GITHUB_DEFAULT_WINDOW_DAYS
+        ? await getGithubWindowTotals(days)
+        : null;
+      const windowTotals = searchTotals ?? await syncGithubWindowTotals(login, token, days);
+      totals = {
+        commits: Math.max(Number(totals.commits), windowTotals.commits),
+        prsOpened: Math.max(Number(totals.prsOpened), windowTotals.prsOpened),
+        prsMerged: Math.max(Number(totals.prsMerged), windowTotals.prsMerged),
+        prsReviewed: Math.max(Number(totals.prsReviewed), windowTotals.reviews),
+        issuesOpened: Math.max(Number(totals.issuesOpened), windowTotals.issuesOpened),
+      };
+    } catch {
+      // Keep event-derived totals when Search is unavailable.
+    }
+  }
+
+  return { daily, totals, days };
 }
 
 export async function getGithubSyncStatus() {

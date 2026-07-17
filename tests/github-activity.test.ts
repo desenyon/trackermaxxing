@@ -1,9 +1,27 @@
 import { describe, expect, it } from "vitest";
 
-import { summarizeGithubEvents } from "@/lib/github/activity";
+import { pushCommitCount, summarizeGithubEvents } from "@/lib/github/activity";
 
 describe("summarizeGithubEvents", () => {
   const since = new Date("2026-07-01T00:00:00.000Z");
+
+  it("falls back to one commit per push when GitHub omits payload sizes", () => {
+    const totals = summarizeGithubEvents([{
+      type: "PushEvent",
+      created_at: "2026-07-02T12:00:00.000Z",
+      payload: {},
+    }], since);
+    expect(totals.get("2026-07-02")).toMatchObject({ commits: 1, pushEvents: 1 });
+  });
+
+  it("parses string push sizes from the API", () => {
+    const totals = summarizeGithubEvents([{
+      type: "PushEvent",
+      created_at: "2026-07-02T12:00:00.000Z",
+      payload: { distinct_size: "25", size: "27" },
+    }], since);
+    expect(totals.get("2026-07-02")).toMatchObject({ commits: 25, pushEvents: 1 });
+  });
 
   it("uses the push size instead of the API's truncated commits array", () => {
     const totals = summarizeGithubEvents([{
@@ -34,5 +52,9 @@ describe("summarizeGithubEvents", () => {
       { type: "PushEvent", created_at: "2026-07-04T12:00:00.000Z", payload: { commits: [1, 2] } },
     ], since);
     expect([...totals]).toEqual([["2026-07-04", { commits: 2, prsOpened: 0, prsMerged: 0, prsReviewed: 0, issuesOpened: 0, pushEvents: 1 }]]);
+  });
+
+  it("counts at least one commit for empty push payloads", () => {
+    expect(pushCommitCount({})).toBe(1);
   });
 });

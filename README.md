@@ -3,23 +3,16 @@
 A fast terminal dashboard for your **Codex**, **Claude Code**, **Cursor**, and **GitHub** activity. No server, no browser, no hosting — it reads your local session files and renders straight to your terminal.
 
 ```
-  _____            _           __  __               _
- |_   _| _ __ _ __| |_____ _ _|  \/  |__ ___ ____ _(_)_ _  __ _
-   | || '_/ _` / _| / / -_) '_| |\/| / _` \ \ /\ \ / | ' \/ _` |
-   |_||_| \__,_\__|_\_\___|_| |_|  |_\__,_/_\_\/_\_\_|_||_\__, |
-                                                          |___/
+LIFETIME 1.0M  ·  TODAY 50.0K  ·  COST $12.50  ·  SESSIONS 10
 
-LIFETIME TOKENS    TOKENS TODAY    EST. LIFETIME COST    SESSIONS
-6.5B               874.1M          $14,597.42            181
+Codex      600.0K  ▁█
+Claude     300.0K  ▁▁
+Cursor     100.0K  ▁▁
 
-── AI usage ────────────────────────────────────────────────────
-┌──────────┬─────────────┬─────────────┬────────────────┐
-│          │    Lifetime │    Last 30d │ Last 30d trend │
-├──────────┼─────────────┼─────────────┼────────────────┤
-│  CODEX   │        1.6B │        1.2B │ ▂▁▁▁▂▂▁█       │
-│  CLAUDE  │        2.1B │          2B │ ▁█▁▆▁▁▁▁▁▁▂    │
-│  CURSOR  │        2.8B │        881M │ ▂▁▂▁█▂▁▂▅▁▅▁▁  │
-└──────────┴─────────────┴─────────────┴────────────────┘
+Commits      100 / 6  ▁█
+PRs           20 / 1  ▁▁
+Merged        10 / 1  ▁█
+Reviews        5 / 1  ▁█
 ```
 
 ## Install
@@ -70,7 +63,7 @@ trackermaxxing rate-limits  # Codex plan usage (primary/secondary rate-limit win
 trackermaxxing github login                    # connect GitHub (auto-detects `gh`)
 trackermaxxing github create-repo my-project --push   # create + push a repo via `gh`
 
-trackermaxxing export json --out report.json   # or `export csv`
+trackermaxxing export json --out report.json   # or `export csv` / `export html`
 ```
 
 ## Where the data comes from
@@ -113,6 +106,14 @@ All optional (see `.env.example`):
 | `CURSOR_HOME` / `CURSOR_STATE_DB` | `~/.cursor`, Cursor's default state db | Cursor paths |
 | `GITHUB_TOKEN` / `GITHUB_LOGIN` | — | Instead of `trackermaxxing github login` |
 | `TRACKER_ENCRYPTION_KEY` | auto-generated at `~/.trackermaxxing/key` | Encrypts saved credentials at rest |
+
+## Export
+
+```bash
+trackermaxxing export json --out report.json
+trackermaxxing export csv --out report.csv
+trackermaxxing export html --out report.html   # self-contained charts for sharing
+```
 
 ## Optional background sync
 

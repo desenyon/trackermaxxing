@@ -99,12 +99,12 @@ program
 
 program
   .command("export")
-  .description("Export usage data as json or csv")
-  .argument("<format>", "json or csv")
+  .description("Export usage data as json, csv, or html")
+  .argument("<format>", "json, csv, or html")
   .option("--out <path>", "write to a file instead of stdout")
   .option("--days <n>", "window size in days", positiveInteger, 365)
   .action(async (format: string, options: { out?: string; days: number }) => {
-    if (format !== "json" && format !== "csv") throw new Error("Format must be json or csv.");
+    if (format !== "json" && format !== "csv" && format !== "html") throw new Error("Format must be json, csv, or html.");
     await runExport(format, options);
   });
 
