@@ -2,6 +2,7 @@ import { desc, gte, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { githubActivityDaily, githubSyncLog } from "@/lib/db/schema";
+import { ghApiSearchCount, ghCliLogin, ghCliToken, isGhCliAuthenticated } from "@/lib/github/gh-cli";
 import { getMeta, setMeta } from "@/lib/settings/meta";
 import { readSecret } from "@/lib/settings/secure-store";
 
@@ -41,13 +42,28 @@ export type GithubWindowTotals = {
 const dayKey = (date: Date) => date.toISOString().slice(0, 10);
 const LIFETIME_META_KEY = "github.lifetime_totals";
 const WINDOW_META_KEY = "github.window_totals";
+const LAST_GITHUB_SYNC_KEY = "github.last_sync_at";
+export const GITHUB_SEARCH_TTL_MS = 2 * 60 * 1000;
+export const GITHUB_EVENTS_SYNC_TTL_MS = 30 * 1000;
+
+export function isStaleGithubSync(syncedAt: string | undefined, ttlMs: number) {
+  if (!syncedAt) return true;
+  const age = Date.now() - Date.parse(syncedAt);
+  return !Number.isFinite(age) || age >= ttlMs;
+}
 
 async function githubToken() {
-  return (await readSecret("github.metrics_token")) ?? process.env.GITHUB_TOKEN ?? null;
+  const stored = (await readSecret("github.metrics_token")) ?? process.env.GITHUB_TOKEN ?? null;
+  if (stored) return stored;
+  if (isGhCliAuthenticated()) return ghCliToken();
+  return null;
 }
 
 async function githubLogin() {
-  return (await readSecret("github.login")) ?? process.env.GITHUB_LOGIN ?? null;
+  const stored = (await readSecret("github.login")) ?? process.env.GITHUB_LOGIN ?? null;
+  if (stored) return stored;
+  if (isGhCliAuthenticated()) return ghCliLogin();
+  return null;
 }
 
 async function githubFetch(path: string, token: string) {
@@ -68,22 +84,27 @@ async function logSync(source: string, status: "success" | "error", rows: number
   await db.insert(githubSyncLog).values({ source, day: dayKey(new Date()), status, rowsIngested: rows, error, completedAt: new Date() });
 }
 
-async function searchCount(endpoint: string, token: string): Promise<number> {
-  const payload = await githubFetch(`${endpoint}&per_page=1`, token) as { total_count?: number };
-  return payload.total_count ?? 0;
+export function buildGithubSearchPath(kind: "commits" | "issues", query: string) {
+  return `/search/${kind}?q=${encodeURIComponent(query)}&per_page=1`;
 }
 
-function encodeQuery(query: string) {
-  return encodeURIComponent(query);
+async function searchCount(kind: "commits" | "issues", query: string, token: string): Promise<number> {
+  const path = buildGithubSearchPath(kind, query);
+  if (isGhCliAuthenticated()) {
+    const viaGh = ghApiSearchCount(path);
+    if (viaGh !== null) return viaGh;
+  }
+  const payload = await githubFetch(path, token) as { total_count?: number };
+  return payload.total_count ?? 0;
 }
 
 async function syncGithubLifetimeTotals(login: string, token: string) {
   const [commits, prsOpened, prsMerged, reviews, issuesOpened] = await Promise.all([
-    searchCount(`search/commits?q=${encodeQuery(`author:${login}`)}`, token),
-    searchCount(`search/issues?q=${encodeQuery(`author:${login} type:pr`)}`, token),
-    searchCount(`search/issues?q=${encodeQuery(`author:${login} type:pr is:merged`)}`, token),
-    searchCount(`search/issues?q=${encodeQuery(`reviewed-by:${login} type:pr`)}`, token),
-    searchCount(`search/issues?q=${encodeQuery(`author:${login} type:issue`)}`, token),
+    searchCount("commits", `author:${login}`, token),
+    searchCount("issues", `author:${login} type:pr`, token),
+    searchCount("issues", `author:${login} type:pr is:merged`, token),
+    searchCount("issues", `reviewed-by:${login} type:pr`, token),
+    searchCount("issues", `author:${login} type:issue`, token),
   ]);
   const totals: GithubLifetimeTotals = { commits, prsOpened, prsMerged, reviews, issuesOpened, login, syncedAt: new Date().toISOString() };
   await setMeta(LIFETIME_META_KEY, JSON.stringify(totals));
@@ -95,11 +116,11 @@ export async function syncGithubWindowTotals(login: string, token: string, days 
   since.setUTCDate(since.getUTCDate() - days + 1);
   const sinceKey = dayKey(since);
   const [commits, prsOpened, prsMerged, reviews, issuesOpened] = await Promise.all([
-    searchCount(`search/commits?q=${encodeQuery(`author:${login} author-date:>=${sinceKey}`)}`, token),
-    searchCount(`search/issues?q=${encodeQuery(`author:${login} type:pr created:>=${sinceKey}`)}`, token),
-    searchCount(`search/issues?q=${encodeQuery(`author:${login} type:pr is:merged created:>=${sinceKey}`)}`, token),
-    searchCount(`search/issues?q=${encodeQuery(`reviewed-by:${login} type:pr created:>=${sinceKey}`)}`, token),
-    searchCount(`search/issues?q=${encodeQuery(`author:${login} type:issue created:>=${sinceKey}`)}`, token),
+    searchCount("commits", `author:${login} author-date:>=${sinceKey}`, token),
+    searchCount("issues", `author:${login} type:pr created:>=${sinceKey}`, token),
+    searchCount("issues", `author:${login} type:pr is:merged merged:>=${sinceKey}`, token),
+    searchCount("issues", `reviewed-by:${login} type:pr created:>=${sinceKey}`, token),
+    searchCount("issues", `author:${login} type:issue created:>=${sinceKey}`, token),
   ]);
   const totals: GithubWindowTotals = { days, commits, prsOpened, prsMerged, reviews, issuesOpened, syncedAt: new Date().toISOString() };
   await setMeta(WINDOW_META_KEY, JSON.stringify(totals));
@@ -125,6 +146,47 @@ export async function getGithubWindowTotals(days = GITHUB_DEFAULT_WINDOW_DAYS): 
   } catch {
     return null;
   }
+}
+
+async function refreshGithubSearchTotalsIfStale(
+  login: string,
+  token: string,
+  days = GITHUB_DEFAULT_WINDOW_DAYS,
+  { force = false } = {},
+) {
+  const [cachedWindow, cachedLifetime] = await Promise.all([
+    getGithubWindowTotals(days),
+    getGithubLifetimeTotals(),
+  ]);
+  const tasks: Array<Promise<unknown>> = [];
+  if (force || isStaleGithubSync(cachedWindow?.syncedAt, GITHUB_SEARCH_TTL_MS)) {
+    tasks.push(syncGithubWindowTotals(login, token, days));
+  }
+  if (force || isStaleGithubSync(cachedLifetime?.syncedAt, GITHUB_SEARCH_TTL_MS)) {
+    tasks.push(syncGithubLifetimeTotals(login, token));
+  }
+  await Promise.all(tasks);
+}
+
+/** Pull fresh GitHub events + search totals when the cache is stale. */
+export async function syncGithubIfStale(options: { force?: boolean; eventTtlMs?: number } = {}) {
+  const eventTtlMs = options.eventTtlMs ?? GITHUB_EVENTS_SYNC_TTL_MS;
+  const last = await getMeta(LAST_GITHUB_SYNC_KEY);
+  const eventsStale = options.force || isStaleGithubSync(last?.updatedAt.toISOString(), eventTtlMs);
+
+  const token = await githubToken();
+  const login = (await getGithubLifetimeTotals())?.login ?? await githubLogin();
+
+  if (!eventsStale) {
+    if (token && login) {
+      await refreshGithubSearchTotalsIfStale(login, token, GITHUB_DEFAULT_WINDOW_DAYS, { force: options.force });
+    }
+    return { skipped: true as const };
+  }
+
+  const result = await syncGithubActivity();
+  await setMeta(LAST_GITHUB_SYNC_KEY, new Date().toISOString());
+  return { skipped: false as const, ...result };
 }
 
 function numericMetric(value: unknown) {
@@ -259,10 +321,11 @@ export async function getGithubActivityOverview(days = GITHUB_DEFAULT_WINDOW_DAY
   const login = (await getGithubLifetimeTotals())?.login ?? await githubLogin();
   if (token && login) {
     try {
-      const searchTotals = days === GITHUB_DEFAULT_WINDOW_DAYS
+      await refreshGithubSearchTotalsIfStale(login, token, days);
+      const windowTotals = days === GITHUB_DEFAULT_WINDOW_DAYS
         ? await getGithubWindowTotals(days)
-        : null;
-      const windowTotals = searchTotals ?? await syncGithubWindowTotals(login, token, days);
+        : await syncGithubWindowTotals(login, token, days);
+      if (!windowTotals) throw new Error("GitHub window totals unavailable.");
       totals = {
         commits: Math.max(Number(totals.commits), windowTotals.commits),
         prsOpened: Math.max(Number(totals.prsOpened), windowTotals.prsOpened),

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { getUnifiedOverview } from "@/lib/ai/service";
 import type { getGithubActivityOverview, GithubLifetimeTotals } from "@/lib/github/activity";
+import { syncGithubIfStale } from "@/lib/github/activity";
 
 import { runSync } from "../commands/sync";
 import { buildReportLines } from "../render/layout";
@@ -11,6 +12,7 @@ type AiOverview = Awaited<ReturnType<typeof getUnifiedOverview>>;
 type GithubOverview = Awaited<ReturnType<typeof getGithubActivityOverview>>;
 
 const REFRESH_MS = 15_000;
+const GITHUB_SYNC_MS = 30_000;
 
 export function App({ days, loaders }: {
   days: number;
@@ -38,17 +40,33 @@ export function App({ days, loaders }: {
     setStatus("");
   }, [days, loaders]);
 
+  const pullGithub = useCallback(async (force = false) => {
+    await syncGithubIfStale({ force });
+    await refresh();
+  }, [refresh]);
+
   useEffect(() => {
-    refresh().catch((error: unknown) => setStatus(error instanceof Error ? error.message : "Failed to load."));
-    const interval = setInterval(() => {
+    pullGithub(true).catch((error: unknown) => setStatus(error instanceof Error ? error.message : "Failed to load."));
+    const refreshInterval = setInterval(() => {
       refresh().catch(() => undefined);
     }, REFRESH_MS);
-    return () => clearInterval(interval);
-  }, [refresh]);
+    const githubInterval = setInterval(() => {
+      pullGithub().catch(() => undefined);
+    }, GITHUB_SYNC_MS);
+    return () => {
+      clearInterval(refreshInterval);
+      clearInterval(githubInterval);
+    };
+  }, [pullGithub, refresh]);
 
   useInput((input, key) => {
     if (input === "q" || key.escape) exit();
-    if (input === "r") refresh().catch(() => undefined);
+    if (input === "r") {
+      setStatus("refreshing");
+      pullGithub(true)
+        .then(() => setStatus(""))
+        .catch((error: unknown) => setStatus(error instanceof Error ? error.message : "refresh failed"));
+    }
     if (input === "s") {
       setStatus("syncing");
       runSync()
@@ -69,7 +87,7 @@ export function App({ days, loaders }: {
       {lines.map((line) => (
         <Text key={line}>{line || " "}</Text>
       ))}
-      {status ? <Text dimColor>{status}</Text> : null}
+      {status ? <Text dimColor>{status}</Text> : <Text dimColor>auto-sync · r refresh · s full sync · q quit</Text>}
     </Box>
   );
 }

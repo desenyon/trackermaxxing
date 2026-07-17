@@ -23,6 +23,14 @@ export function ghCliLogin() {
   return run(["api", "user", "--jq", ".login"]);
 }
 
+/** Run an authenticated GitHub REST request via `gh api`. */
+export function ghApiSearchCount(apiPath: string): number | null {
+  const result = spawnSync("gh", ["api", apiPath, "--jq", ".total_count"], { encoding: "utf8" });
+  if (result.status !== 0) return null;
+  const parsed = Number(result.stdout.trim());
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
 export function ghRepoCreate(args: string[]) {
   const result = spawnSync("gh", ["repo", "create", ...args], { stdio: "inherit" });
   return result.status === 0;
