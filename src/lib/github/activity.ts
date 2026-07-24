@@ -41,8 +41,13 @@ export type GithubWindowTotals = {
 
 const dayKey = (date: Date) => date.toISOString().slice(0, 10);
 const LIFETIME_META_KEY = "github.lifetime_totals";
-const WINDOW_META_KEY = "github.window_totals";
+const LEGACY_WINDOW_META_KEY = "github.window_totals";
 const LAST_GITHUB_SYNC_KEY = "github.last_sync_at";
+
+/** Per-window cache keys so `--days 30` and `--days 90` do not clobber each other. */
+export function windowTotalsMetaKey(days: number) {
+  return `github.window_totals.${days}`;
+}
 export const GITHUB_SEARCH_TTL_MS = 2 * 60 * 1000;
 export const GITHUB_EVENTS_SYNC_TTL_MS = 30 * 1000;
 
@@ -123,7 +128,7 @@ export async function syncGithubWindowTotals(login: string, token: string, days 
     searchCount("issues", `author:${login} type:issue created:>=${sinceKey}`, token),
   ]);
   const totals: GithubWindowTotals = { days, commits, prsOpened, prsMerged, reviews, issuesOpened, syncedAt: new Date().toISOString() };
-  await setMeta(WINDOW_META_KEY, JSON.stringify(totals));
+  await setMeta(windowTotalsMetaKey(days), JSON.stringify(totals));
   return totals;
 }
 
@@ -138,7 +143,8 @@ export async function getGithubLifetimeTotals(): Promise<GithubLifetimeTotals | 
 }
 
 export async function getGithubWindowTotals(days = GITHUB_DEFAULT_WINDOW_DAYS): Promise<GithubWindowTotals | null> {
-  const setting = await getMeta(WINDOW_META_KEY);
+  const setting = await getMeta(windowTotalsMetaKey(days))
+    ?? (days === GITHUB_DEFAULT_WINDOW_DAYS ? await getMeta(LEGACY_WINDOW_META_KEY) : null);
   if (!setting) return null;
   try {
     const parsed = JSON.parse(setting.value) as GithubWindowTotals;
@@ -322,10 +328,8 @@ export async function getGithubActivityOverview(days = GITHUB_DEFAULT_WINDOW_DAY
   if (token && login) {
     try {
       await refreshGithubSearchTotalsIfStale(login, token, days);
-      const windowTotals = days === GITHUB_DEFAULT_WINDOW_DAYS
-        ? await getGithubWindowTotals(days)
-        : await syncGithubWindowTotals(login, token, days);
-      if (!windowTotals) throw new Error("GitHub window totals unavailable.");
+      let windowTotals = await getGithubWindowTotals(days);
+      if (!windowTotals) windowTotals = await syncGithubWindowTotals(login, token, days);
       totals = {
         commits: Math.max(Number(totals.commits), windowTotals.commits),
         prsOpened: Math.max(Number(totals.prsOpened), windowTotals.prsOpened),
