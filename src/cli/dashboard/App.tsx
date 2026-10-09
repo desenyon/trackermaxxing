@@ -1,5 +1,5 @@
 import { Box, Text, useApp, useInput } from "ink";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 
 import type { getUnifiedOverview } from "@/lib/ai/service";
 import type { getGithubActivityOverview, GithubLifetimeTotals } from "@/lib/github/activity";
@@ -28,21 +28,30 @@ export function App({ days, loaders }: {
   const [githubLifetime, setGithubLifetime] = useState<GithubLifetimeTotals | null>(null);
   const [status, setStatus] = useState<string>("");
 
+  const refreshing = useRef(false);
+  const syncing = useRef(false);
+
   const refresh = useCallback(async () => {
-    const [nextAi, nextGithub, nextGithubLifetime] = await Promise.all([
-      loaders.getAi(days),
-      loaders.getGithub(days),
-      loaders.getGithubLifetime(),
-    ]);
-    setAi(nextAi);
-    setGithub(nextGithub);
-    setGithubLifetime(nextGithubLifetime);
-    setStatus("");
+    if (refreshing.current) return;
+    refreshing.current = true;
+    try {
+      const [nextAi, nextGithub] = await Promise.all([loaders.getAi(days), loaders.getGithub(days)]);
+      setAi(nextAi);
+      setGithub(nextGithub);
+      setGithubLifetime(nextGithub.lifetime ?? null);
+      setStatus(nextGithub.warning ?? "");
+    } finally { refreshing.current = false; }
   }, [days, loaders]);
 
   const pullGithub = useCallback(async (force = false) => {
-    await syncGithubIfStale({ force });
+    if (syncing.current) return;
+    syncing.current = true;
+    let warning = "";
+    try { await syncGithubIfStale({ force }); }
+    catch (error) { warning = error instanceof Error ? error.message : "GitHub sync failed."; }
+    finally { syncing.current = false; }
     await refresh();
+    if (warning) setStatus(warning);
   }, [refresh]);
 
   useEffect(() => {

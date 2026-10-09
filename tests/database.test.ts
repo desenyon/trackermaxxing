@@ -98,7 +98,25 @@ describe("database migrations", () => {
     legacy.close();
 
     const { sqlite } = openDatabase(databasePath, migrationsFolder);
-    expect(sqlite.prepare("SELECT count(*) FROM __drizzle_migrations").pluck().get()).toBe(2);
+    expect(sqlite.prepare("SELECT count(*) FROM __drizzle_migrations").pluck().get()).toBe(3);
     sqlite.close();
   });
+});
+
+it("backfills a pre-ledger cache and keeps its tokens available offline", async () => {
+  const { copyFileSync, mkdirSync, readFileSync, writeFileSync } = await import("node:fs");
+  const databasePath = temporaryDatabasePath();
+  const oldFolder = resolve(databasePath, "../old-migrations");
+  mkdirSync(resolve(oldFolder, "meta"), { recursive: true });
+  const journal = JSON.parse(readFileSync(resolve(migrationsFolder, "meta/_journal.json"), "utf8"));
+  journal.entries = journal.entries.slice(0, 2);
+  writeFileSync(resolve(oldFolder, "meta/_journal.json"), JSON.stringify(journal));
+  for (const entry of journal.entries) copyFileSync(resolve(migrationsFolder, `${entry.tag}.sql`), resolve(oldFolder, `${entry.tag}.sql`));
+  const old = openDatabase(databasePath, oldFolder);
+  old.sqlite.prepare("INSERT INTO ai_sessions VALUES ('existing', 'codex', '/existing.jsonl', ?, ?, NULL, NULL, 100, 20, 10, 5, 0.25, 2, 'hash')").run(Date.parse("2026-07-15T23:59:00Z"), Date.parse("2026-07-16T01:00:00Z"));
+  old.sqlite.close();
+  const current = openDatabase(databasePath, migrationsFolder);
+  expect(current.sqlite.prepare("SELECT date, input_tokens, output_tokens FROM ai_session_daily").all()).toEqual([{ date: "2026-07-15", input_tokens: 100, output_tokens: 20 }]);
+  expect(current.sqlite.prepare("SELECT input_tokens FROM ai_daily_rollups").pluck().get()).toBe(100);
+  current.sqlite.close();
 });

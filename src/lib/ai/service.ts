@@ -1,133 +1,120 @@
-import { and, desc, eq, gte, notInArray, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 
-import type { CodexSession } from "@/lib/codex/parser";
+import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
+
+import { type AiSession, type AiDailyUsage, usageFields } from "@/lib/ai/session";
 import { db } from "@/lib/db";
-import { aiDailyRollups, aiSessions } from "@/lib/db/schema";
+import { aiDailyRollups, aiSessionDaily, aiSessions } from "@/lib/db/schema";
 
-const dayKey = (date: Date) => date.toISOString().slice(0, 10);
+import { utcDay as dayKey, utcWindow } from "@/lib/time";
 
-export function reconcileAiSessions(provider: string, sessions: CodexSession[]) {
+function sessionDays(session: AiSession): AiDailyUsage[] {
+  const rows = session.dailyUsage ?? [{ ...session, date: dayKey(session.firstActivity) }];
+  const dates = new Set<string>();
+  for (const row of rows) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(row.date) || new Date(row.date).toISOString().slice(0, 10) !== row.date || dates.has(row.date)) {
+      throw new Error(`Invalid or duplicate usage day: ${row.date}`);
+    }
+    dates.add(row.date);
+    for (const field of usageFields) {
+      if (!Number.isFinite(row[field]) || row[field] < 0 || (field !== "estimatedCostUsd" && !Number.isSafeInteger(row[field]))) {
+        throw new Error(`Invalid ${field} in session ${session.sessionPath}`);
+      }
+    }
+  }
+  for (const field of usageFields) {
+    const sum = rows.reduce((total, row) => total + row[field], 0);
+    if (!Number.isFinite(session[field]) || Math.abs(sum - session[field]) > 1e-8) {
+      throw new Error(`Daily ${field} does not match session ${session.sessionPath}`);
+    }
+  }
+  return rows;
+}
+
+/** Replace one complete provider snapshot and its projections in one transaction. */
+export function reconcileAiSessions(provider: string, sessions: AiSession[]) {
   return db.transaction((tx) => {
+    const paths = new Set<string>();
     for (const session of sessions) {
-    // Identity is the session file's path, not its content hash. Codex/Claude
-    // session files are appended to while a session is active, so the same
-    // still-growing session hashes differently on every sync - keying on
-    // content used to insert a brand new row each time instead of updating the
-    // existing one, silently multi-counting the same conversation.
-      tx.insert(aiSessions).values({
-      id: session.id,
-      provider,
-      sessionPath: session.sessionPath,
-      firstActivity: session.firstActivity,
-      lastActivity: session.lastActivity,
-      model: session.model,
-      cwd: session.cwd,
-      inputTokens: session.inputTokens,
-      outputTokens: session.outputTokens,
-      cachedInputTokens: session.cachedInputTokens,
-      reasoningTokens: session.reasoningTokens,
-      estimatedCostUsd: session.estimatedCostUsd,
-      turnCount: session.turnCount,
-      sourceFileHash: `${provider}:${session.sourceFileHash}`,
-      }).onConflictDoUpdate({
-      target: [aiSessions.provider, aiSessions.sessionPath],
-      set: {
-        id: session.id,
-        firstActivity: session.firstActivity,
-        lastActivity: session.lastActivity,
-        model: session.model,
-        cwd: session.cwd,
-        inputTokens: session.inputTokens,
-        outputTokens: session.outputTokens,
-        cachedInputTokens: session.cachedInputTokens,
-        reasoningTokens: session.reasoningTokens,
-        estimatedCostUsd: session.estimatedCostUsd,
-        turnCount: session.turnCount,
-        sourceFileHash: `${provider}:${session.sourceFileHash}`,
-      },
+      if (paths.has(session.sessionPath)) throw new Error(`Duplicate session path: ${session.sessionPath}`);
+      paths.add(session.sessionPath);
+      const days = sessionDays(session);
+      const row = { ...session };
+      delete row.dailyUsage;
+      const values = { ...row, id: `${provider}-${createHash("sha256").update(session.sessionPath).digest("hex")}`, provider, sourceFileHash: `${provider}:${session.sourceFileHash}` };
+      tx.insert(aiSessions).values(values).onConflictDoUpdate({
+        target: [aiSessions.provider, aiSessions.sessionPath], set: values,
       }).run();
+      tx.delete(aiSessionDaily).where(and(eq(aiSessionDaily.provider, provider), eq(aiSessionDaily.sessionPath, session.sessionPath))).run();
+      for (const day of days) {
+        tx.insert(aiSessionDaily).values({
+          provider, sessionPath: session.sessionPath, date: day.date,
+          inputTokens: day.inputTokens, outputTokens: day.outputTokens,
+          cachedInputTokens: day.cachedInputTokens, reasoningTokens: day.reasoningTokens,
+          estimatedCostUsd: day.estimatedCostUsd, turnCount: day.turnCount,
+        }).run();
+      }
     }
-
-    const providerRows = eq(aiSessions.provider, provider);
-    if (sessions.length === 0) {
-      tx.delete(aiSessions).where(providerRows).run();
-    } else {
-      tx.delete(aiSessions).where(and(
-        providerRows,
-        notInArray(aiSessions.sessionPath, sessions.map((session) => session.sessionPath)),
-      )).run();
+    // Do not put every path into a NOT IN query: large histories exceed SQLite's variable limit.
+    for (const row of tx.select({ path: aiSessions.sessionPath }).from(aiSessions).where(eq(aiSessions.provider, provider)).all()) {
+      if (!paths.has(row.path)) tx.delete(aiSessions).where(and(eq(aiSessions.provider, provider), eq(aiSessions.sessionPath, row.path))).run();
     }
+    refreshAiDailyRollups();
     return sessions.length;
   });
 }
 
 export function refreshAiDailyRollups() {
   return db.transaction((tx) => {
-    const sessions = tx.select().from(aiSessions).all();
-    const totals = new Map<string, typeof sessions>();
-    for (const session of sessions) {
-      const key = `${session.provider}:${dayKey(session.firstActivity)}`;
-      totals.set(key, [...(totals.get(key) ?? []), session]);
-    }
-
     tx.delete(aiDailyRollups).run();
-    for (const [key, rows] of totals) {
-      const [provider, date] = key.split(":");
-      const sum = (field: keyof (typeof rows)[number]) => rows.reduce((total, row) => total + Number(row[field] ?? 0), 0);
-      tx.insert(aiDailyRollups).values({
-        date,
-        provider,
-        inputTokens: sum("inputTokens"),
-        outputTokens: sum("outputTokens"),
-        cachedTokens: sum("cachedInputTokens"),
-        sessionCount: rows.length,
-        turnCount: sum("turnCount"),
-        costUsd: sum("estimatedCostUsd"),
-      }).run();
-    }
+    tx.run(sql`
+      INSERT INTO ai_daily_rollups (date, provider, input_tokens, output_tokens, cached_tokens, session_count, turn_count, cost_usd)
+      SELECT date, provider, sum(input_tokens), sum(output_tokens), sum(cached_input_tokens), count(*), sum(turn_count), sum(estimated_cost_usd)
+      FROM ai_session_daily GROUP BY date, provider
+    `);
   });
 }
 
 export async function getUnifiedOverview(days = 90) {
-  const since = new Date();
-  since.setUTCDate(since.getUTCDate() - days + 1);
-  const sinceKey = dayKey(since);
+  return db.transaction((tx) => {
+    const { since: sinceKey, through } = utcWindow(days);
 
-  const daily = await db.select().from(aiDailyRollups).where(gte(aiDailyRollups.date, sinceKey)).orderBy(aiDailyRollups.date);
-  const byProvider = await db.select({
-    provider: aiSessions.provider,
-    inputTokens: sql<number>`coalesce(sum(${aiSessions.inputTokens}), 0)`,
-    outputTokens: sql<number>`coalesce(sum(${aiSessions.outputTokens}), 0)`,
-    sessions: sql<number>`count(*)`,
-    cost: sql<number>`coalesce(sum(${aiSessions.estimatedCostUsd}), 0)`,
-  }).from(aiSessions).groupBy(aiSessions.provider);
+    const daily = tx.select().from(aiDailyRollups).where(and(gte(aiDailyRollups.date, sinceKey), lte(aiDailyRollups.date, through))).orderBy(aiDailyRollups.date).all();
+    const byProvider = tx.select({
+      provider: aiSessions.provider,
+      inputTokens: sql<number>`coalesce(sum(${aiSessions.inputTokens}), 0)`,
+      outputTokens: sql<number>`coalesce(sum(${aiSessions.outputTokens}), 0)`,
+      sessions: sql<number>`count(*)`,
+      cost: sql<number>`coalesce(sum(${aiSessions.estimatedCostUsd}), 0)`,
+    }).from(aiSessions).groupBy(aiSessions.provider).all();
 
-  const [lifetime] = await db.select({
-    inputTokens: sql<number>`coalesce(sum(${aiSessions.inputTokens}), 0)`,
-    outputTokens: sql<number>`coalesce(sum(${aiSessions.outputTokens}), 0)`,
-    sessions: sql<number>`count(*)`,
-    cost: sql<number>`coalesce(sum(${aiSessions.estimatedCostUsd}), 0)`,
-  }).from(aiSessions);
+    const lifetime = tx.select({
+      inputTokens: sql<number>`coalesce(sum(${aiSessions.inputTokens}), 0)`,
+      outputTokens: sql<number>`coalesce(sum(${aiSessions.outputTokens}), 0)`,
+      sessions: sql<number>`count(*)`,
+      cost: sql<number>`coalesce(sum(${aiSessions.estimatedCostUsd}), 0)`,
+    }).from(aiSessions).get();
 
-  const todayRows = daily.filter((row) => row.date === dayKey(new Date()));
-  const todayTokens = todayRows.reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
+    const todayRows = daily.filter((row) => row.date === through);
+    const todayTokens = todayRows.reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
 
-  return {
-    lifetime: {
-      totalTokens: Number(lifetime?.inputTokens ?? 0) + Number(lifetime?.outputTokens ?? 0),
-      sessions: Number(lifetime?.sessions ?? 0),
-      estimatedCostUsd: Number(lifetime?.cost ?? 0),
-    },
-    today: { tokens: todayTokens, sessions: todayRows.reduce((sum, row) => sum + row.sessionCount, 0) },
-    byProvider: byProvider.map((row) => ({
-      provider: row.provider,
-      totalTokens: Number(row.inputTokens) + Number(row.outputTokens),
-      sessions: Number(row.sessions),
-      cost: Number(row.cost),
-    })),
-    daily,
-    recentSessions: await db.select().from(aiSessions).orderBy(desc(aiSessions.lastActivity)).limit(8),
-  };
+    return {
+      lifetime: {
+        totalTokens: Number(lifetime?.inputTokens ?? 0) + Number(lifetime?.outputTokens ?? 0),
+        sessions: Number(lifetime?.sessions ?? 0),
+        estimatedCostUsd: Number(lifetime?.cost ?? 0),
+      },
+      today: { tokens: todayTokens, sessions: todayRows.reduce((sum, row) => sum + row.sessionCount, 0) },
+      byProvider: byProvider.map((row) => ({
+        provider: row.provider,
+        totalTokens: Number(row.inputTokens) + Number(row.outputTokens),
+        sessions: Number(row.sessions),
+        cost: Number(row.cost),
+      })),
+      daily,
+      recentSessions: tx.select().from(aiSessions).orderBy(desc(aiSessions.lastActivity)).limit(8).all(),
+    };
+  });
 }
 
 export async function getTopSessions(provider?: string, limit = 20) {

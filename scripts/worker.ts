@@ -4,7 +4,9 @@ import { syncAllLocalAi } from "../src/lib/sync/local-ai";
 import { syncGithubActivity } from "../src/lib/github/activity";
 
 async function runDailySync() {
-  await syncAllLocalAi();
+  const ai = await syncAllLocalAi();
+  if (ai.skipped.length) console.warn("Sources unavailable, cache retained:", ai.skipped.join(", "));
+  if (Object.keys(ai.errors).length) console.warn("Source scan errors, cache retained:", ai.errors);
   try {
     await syncGithubActivity();
   } catch (error) {
@@ -15,7 +17,7 @@ async function runDailySync() {
 const schedule = process.env.SYNC_CRON ?? "0 2 * * *";
 cron.schedule(schedule, () => {
   runDailySync().catch((error: unknown) => console.error("Scheduled sync failed:", error));
-}, { timezone: "UTC" });
+}, { timezone: "UTC", noOverlap: true });
 
 console.info(`TrackerMaxxing worker started (${schedule} UTC).`);
 

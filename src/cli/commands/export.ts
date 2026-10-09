@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 
 import { getUnifiedOverview } from "@/lib/ai/service";
-import { getGithubActivityOverview, getGithubLifetimeTotals } from "@/lib/github/activity";
+import { getGithubActivityOverview } from "@/lib/github/activity";
 
 import { renderHtmlReport } from "../render/html";
 import { good } from "../render/theme";
@@ -11,13 +11,14 @@ function csvEscape(value: string | number) {
   return /[",\n]/.test(text) ? `"${text.replaceAll("\"", "\"\"")}"` : text;
 }
 
-export async function runExport(format: "json" | "csv" | "html", options: { out?: string; days: number }) {
-  const [ai, github, githubLifetime] = await Promise.all([
+export async function runExport(format: "json" | "csv" | "html", options: { out?: string; days: number; offline?: boolean }) {
+  const [ai, github] = await Promise.all([
     getUnifiedOverview(options.days),
-    getGithubActivityOverview(options.days),
-    getGithubLifetimeTotals(),
+    getGithubActivityOverview(options.days, { offline: options.offline }),
   ]);
 
+  if (github.warning) process.stderr.write(`${github.warning} Using cached GitHub data.\n`);
+  const githubLifetime = github.lifetime ?? null;
   let output: string;
   if (format === "html") {
     output = renderHtmlReport(ai, github, { days: options.days, githubLifetime });

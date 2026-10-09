@@ -1,6 +1,8 @@
 import type { getUnifiedOverview } from "@/lib/ai/service";
 import type { getGithubActivityOverview, GithubLifetimeTotals } from "@/lib/github/activity";
 
+import { dailySeries } from "./series";
+
 import { compactNumber, currency, sparkline } from "./format";
 
 type AiOverview = Awaited<ReturnType<typeof getUnifiedOverview>>;
@@ -18,13 +20,13 @@ function graphWidth(width: number) {
   return Math.max(18, Math.min(48, width - 26));
 }
 
-function windowTrend(daily: AiOverview["daily"], provider: string, days: number) {
+function windowTrend(daily: AiOverview["daily"], provider: string, days: number, width: number) {
   const byDate = new Map<string, number>();
   for (const row of daily) {
     if (row.provider !== provider) continue;
     byDate.set(row.date, (byDate.get(row.date) ?? 0) + row.inputTokens + row.outputTokens);
   }
-  return [...byDate.keys()].sort().slice(-days).map((date) => byDate.get(date) ?? 0);
+  return dailySeries(byDate, days, width);
 }
 
 function lifetimeTokens(ai: AiOverview, provider: Provider) {
@@ -32,8 +34,8 @@ function lifetimeTokens(ai: AiOverview, provider: Provider) {
   return row?.totalTokens ?? 0;
 }
 
-function githubSeries(daily: GithubOverview["daily"], key: keyof GithubOverview["daily"][number], days: number) {
-  return daily.slice(-days).map((row) => Number(row[key] ?? 0));
+function githubSeries(daily: GithubOverview["daily"], key: keyof GithubOverview["daily"][number], days: number, width: number) {
+  return dailySeries(new Map(daily.map((row) => [row.day, Number(row[key] ?? 0)])), days, width);
 }
 
 export function buildReportLines(
@@ -59,17 +61,17 @@ export function buildReportLines(
 
   for (const provider of PROVIDERS) {
     const total = lifetimeTokens(ai, provider);
-    const trend = windowTrend(ai.daily, provider, graph);
+    const trend = windowTrend(ai.daily, provider, days, graph);
     lines.push(`${PROVIDER_LABEL[provider].padEnd(8)} ${compactNumber(total).padStart(8)}  ${sparkline(trend)}`);
   }
 
   lines.push("");
   const lifetime = options.githubLifetime;
   const ghMetrics = [
-    ["Commits", lifetime?.commits, github.totals.commits, githubSeries(github.daily, "commits", graph)],
-    ["PRs", lifetime?.prsOpened, github.totals.prsOpened, githubSeries(github.daily, "prsOpened", graph)],
-    ["Merged", lifetime?.prsMerged, github.totals.prsMerged, githubSeries(github.daily, "prsMerged", graph)],
-    ["Reviews", lifetime?.reviews, github.totals.prsReviewed, githubSeries(github.daily, "prsReviewed", graph)],
+    ["Commits", lifetime?.commits, github.totals.commits, githubSeries(github.daily, "commits", windowDays, graph)],
+    ["PRs", lifetime?.prsOpened, github.totals.prsOpened, githubSeries(github.daily, "prsOpened", windowDays, graph)],
+    ["Merged", lifetime?.prsMerged, github.totals.prsMerged, githubSeries(github.daily, "prsMerged", windowDays, graph)],
+    ["Reviews", lifetime?.reviews, github.totals.prsReviewed, githubSeries(github.daily, "prsReviewed", windowDays, graph)],
   ] as const;
 
   for (const [label, lifetimeValue, windowValue, series] of ghMetrics) {

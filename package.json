@@ -11,7 +11,7 @@
     "dist"
   ],
   "scripts": {
-    "dev": "tsx src/cli/index.ts",
+    "dev": "node --import tsx src/cli/index.ts",
     "build": "tsup",
     "start": "node dist/cli.js",
     "test": "vitest run",
@@ -20,9 +20,11 @@
     "lint": "eslint .",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:seed": "tsx scripts/seed.ts",
-    "db:purge-demo": "tsx scripts/purge-demo.ts",
-    "daemon": "tsx scripts/worker.ts"
+    "db:seed": "node --import tsx scripts/seed.ts",
+    "db:purge-demo": "node --import tsx scripts/purge-demo.ts",
+    "daemon": "node --import tsx scripts/worker.ts",
+    "test:smoke": "node --import tsx scripts/smoke.ts",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run test:smoke"
   },
   "private": true,
   "dependencies": {
@@ -53,5 +55,8 @@
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.46.4",
     "vitest": "^4.1.6"
+  },
+  "engines": {
+    "node": ">=22.12.0"
   }
 }

@@ -1,4 +1,4 @@
-import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { foreignKey, index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const codexAccountSnapshots = sqliteTable(
   "codex_account_snapshots",
@@ -91,3 +91,20 @@ export const githubActivityDaily = sqliteTable(
   },
   (table) => [uniqueIndex("gh_activity_daily_unique").on(table.day, table.login)],
 );
+
+// Canonical per-session ledger: rollups can be rebuilt without re-reading sources.
+export const aiSessionDaily = sqliteTable("ai_session_daily", {
+  provider: text("provider").notNull(),
+  sessionPath: text("session_path").notNull(),
+  date: text("date").notNull(),
+  inputTokens: integer("input_tokens").notNull().default(0),
+  outputTokens: integer("output_tokens").notNull().default(0),
+  cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
+  reasoningTokens: integer("reasoning_tokens").notNull().default(0),
+  estimatedCostUsd: real("estimated_cost_usd").notNull().default(0),
+  turnCount: integer("turn_count").notNull().default(0),
+}, (table) => [
+  uniqueIndex("ai_session_daily_identity").on(table.provider, table.sessionPath, table.date),
+  index("ai_session_daily_date").on(table.date),
+  foreignKey({ columns: [table.provider, table.sessionPath], foreignColumns: [aiSessions.provider, aiSessions.sessionPath] }).onDelete("cascade"),
+]);

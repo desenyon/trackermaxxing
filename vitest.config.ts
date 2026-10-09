@@ -10,6 +10,8 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    setupFiles: ["./tests/setup.ts"],
+    maxWorkers: 2,
     clearMocks: true,
     restoreMocks: true,
     include: ["tests/**/*.test.ts"],

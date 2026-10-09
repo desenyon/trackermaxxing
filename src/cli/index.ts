@@ -8,7 +8,7 @@ import { runReport } from "./commands/report";
 import { runSessions } from "./commands/sessions";
 import { runSetup } from "./commands/setup";
 import { runSync } from "./commands/sync";
-import { positiveInteger } from "./options";
+import { dayCount, positiveInteger } from "./options";
 import { renderError } from "./render/snapshot";
 
 const program = new Command();
@@ -22,10 +22,11 @@ program
   .command("report", { isDefault: true })
   .description("Print a snapshot report (default command)")
   .option("--json", "output raw JSON instead of a formatted report")
-  .option("--days <n>", "window size in days", positiveInteger, 30)
+  .option("--days <n>", "window size in UTC days (1–36500)", dayCount, 30)
+  .option("--offline", "read cached data only; no source scans, GitHub CLI calls, or network requests")
   .option("--no-sync", "skip syncing local files first, read from cache")
-  .action(async (options: { json: boolean; days: number; sync: boolean }) => {
-    await runReport({ json: options.json, days: options.days, sync: options.sync });
+  .action(async (options: { json: boolean; days: number; sync: boolean; offline?: boolean }) => {
+    await runReport({ json: options.json, days: options.days, sync: options.sync, offline: options.offline });
   });
 
 program
@@ -38,8 +39,10 @@ program
 program
   .command("sync")
   .description("Sync Codex, Claude, Cursor, and GitHub activity into the local cache")
-  .action(async () => {
-    const result = await runSync();
+  .option("--offline", "sync local AI sources only; skip GitHub")
+  .action(async (options: { offline?: boolean }) => {
+    const result = await runSync(options);
+    if (Object.keys(result.ai.errors).length) process.exitCode = 1;
     const github = "error" in result.github ? `error: ${result.github.error}` : `${result.github.rowsIngested} days for @${result.github.login}`;
     process.stdout.write(
       `Codex ${result.ai.codex} · Claude ${result.ai.claude} · Cursor ${result.ai.cursor} sessions synced.\nGitHub: ${github}\n`,
@@ -50,7 +53,7 @@ program
   .command("dashboard")
   .alias("dash")
   .description("Live, auto-refreshing terminal dashboard")
-  .option("--days <n>", "window size in days", positiveInteger, 30)
+  .option("--days <n>", "window size in UTC days (1–36500)", dayCount, 30)
   .action(async (options: { days: number }) => {
     const { runDashboard } = await import("./dashboard/index");
     await runDashboard({ days: options.days });
@@ -101,9 +104,10 @@ program
   .command("export")
   .description("Export usage data as json, csv, or html")
   .argument("<format>", "json, csv, or html")
+  .option("--offline", "export cached data without network requests or GitHub CLI calls")
   .option("--out <path>", "write to a file instead of stdout")
-  .option("--days <n>", "window size in days", positiveInteger, 365)
-  .action(async (format: string, options: { out?: string; days: number }) => {
+  .option("--days <n>", "window size in UTC days (1–36500)", dayCount, 365)
+  .action(async (format: string, options: { out?: string; days: number; offline?: boolean }) => {
     if (format !== "json" && format !== "csv" && format !== "html") throw new Error("Format must be json, csv, or html.");
     await runExport(format, options);
   });
