@@ -1,5 +1,7 @@
 import { ghCliLogin, ghCliToken, isGhCliAuthenticated, isGhCliInstalled } from "@/lib/github/gh-cli";
-import { writeSecret } from "@/lib/settings/secure-store";
+import { normalizeGithubLogin } from "@/lib/github/account";
+import { githubFetch } from "@/lib/github/transport";
+import { writeSecrets } from "@/lib/settings/secure-store";
 
 import { dim, good } from "../render/theme";
 
@@ -83,8 +85,10 @@ export async function githubLogin(options: { token?: string; login?: string; noG
 
   if (!token.trim()) throw new Error("A GitHub token is required.");
 
-  await writeSecret("github.metrics_token", token.trim());
-  if (login?.trim()) await writeSecret("github.login", login.trim());
+  const user = await githubFetch("/user", token.trim()) as { login?: unknown };
+  if (typeof user.login !== "string") throw new Error("Unable to resolve GitHub login.");
+  login = normalizeGithubLogin(login?.trim() || user.login);
+  writeSecrets({ "github.metrics_token": token.trim(), "github.login": login });
 
   process.stdout.write(`${good("✓")} GitHub credentials saved via ${source}${login ? ` (@${login})` : ""}. ${dim("Run `trackermaxxing sync` to pull commits and PRs.")}\n`);
 }

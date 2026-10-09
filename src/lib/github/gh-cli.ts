@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 
 function run(args: string[]) {
-  const result = spawnSync("gh", args, { encoding: "utf8" });
+  const result = spawnSync("gh", args, { encoding: "utf8", timeout: 15_000 });
   if (result.error || result.status !== 0) return null;
   return result.stdout.trim();
 }
@@ -11,7 +11,7 @@ export function isGhCliInstalled() {
 }
 
 export function isGhCliAuthenticated() {
-  const result = spawnSync("gh", ["auth", "status"], { encoding: "utf8" });
+  const result = spawnSync("gh", ["auth", "status"], { encoding: "utf8", timeout: 15_000 });
   return result.status === 0;
 }
 
@@ -25,7 +25,7 @@ export function ghCliLogin() {
 
 /** Run an authenticated GitHub REST request via `gh api`. */
 export function ghApiSearchCount(apiPath: string): number | null {
-  const result = spawnSync("gh", ["api", apiPath, "--jq", ".total_count"], { encoding: "utf8" });
+  const result = spawnSync("gh", ["api", apiPath, "--jq", ".total_count"], { encoding: "utf8", timeout: 15_000 });
   if (result.status !== 0) return null;
   const parsed = Number(result.stdout.trim());
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;

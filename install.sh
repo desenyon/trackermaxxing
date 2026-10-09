@@ -13,14 +13,11 @@ info()  { printf '\033[1;35m==>\033[0m %s\n' "$1"; }
 ok()    { printf '\033[1;32m✓\033[0m %s\n' "$1"; }
 fail()  { printf '\033[1;31m✗\033[0m %s\n' "$1" >&2; exit 1; }
 
-command -v node >/dev/null 2>&1 || fail "Node.js is required. Install it from https://nodejs.org (v20+) and re-run this script."
+command -v node >/dev/null 2>&1 || fail "Node.js is required. Install it from https://nodejs.org (v22.12+; Node 24 LTS recommended) and re-run this script."
 command -v npm  >/dev/null 2>&1 || fail "npm is required (it ships with Node.js)."
 command -v git  >/dev/null 2>&1 || fail "git is required."
 
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-if [ "$NODE_MAJOR" -lt 20 ]; then
-  fail "Node.js 20+ is required (found $(node -v)). Upgrade and re-run."
-fi
+node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 12) ? 0 : 1)' || fail "Node.js 22.12+ is required. Upgrade and re-run."
 
 if [ -d "$INSTALL_DIR/.git" ]; then
   info "Updating existing install at $INSTALL_DIR"
@@ -32,7 +29,7 @@ else
 fi
 
 info "Installing dependencies"
-(cd "$INSTALL_DIR" && npm install --no-fund --no-audit --silent)
+(cd "$INSTALL_DIR" && npm ci --no-fund --no-audit --silent)
 
 info "Building"
 (cd "$INSTALL_DIR" && npm run build --silent)

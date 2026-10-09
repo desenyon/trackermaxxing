@@ -26,7 +26,7 @@ export async function runSetup() {
   process.stdout.write("\n");
 
   process.stdout.write("GitHub connection:\n");
-  const hasToken = Boolean(process.env.GITHUB_TOKEN) || (await hasSecret("github.metrics_token"));
+  const hasToken = Boolean(process.env.GITHUB_TOKEN || process.env.GH_TOKEN) || (await hasSecret("github.metrics_token"));
   if (hasToken) {
     process.stdout.write(`  ${good("✓")} Already configured\n\n`);
   } else if (isGhCliInstalled() && isGhCliAuthenticated()) {

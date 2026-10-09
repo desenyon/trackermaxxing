@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { parseClaudeJsonl } from "@/lib/claude/parser";
+import { parseClaudeJsonl, readLocalClaudeSessions } from "@/lib/claude/parser";
 import { parseCodexJsonl } from "@/lib/codex/parser";
 import { readCursorTokenSessions, readCursorTranscriptSessions } from "@/lib/cursor/parser";
 import { decryptSecret, encryptSecret } from "@/lib/settings/secure-store";
@@ -103,4 +103,55 @@ describe("secret encryption", () => {
     process.env.TRACKER_ENCRYPTION_KEY = "test-only-key";
     expect(() => decryptSecret("plaintext")).toThrow("invalid format");
   });
+});
+
+
+describe("ingestion edge cases", () => {
+  it("sums Codex last-only usage and accounts for counter resets", () => {
+    const row = (time: string, usage: object) => JSON.stringify({ type: "event_msg", timestamp: time, payload: { type: "token_count", info: usage } });
+    const lastOnly = parseCodexJsonl([
+      row("2026-07-01T23:59:00Z", { last_token_usage: { input_tokens: 10, output_tokens: 2 } }),
+      row("2026-07-02T00:01:00Z", { last_token_usage: { input_tokens: 20, output_tokens: 3 } }),
+    ].join("\n"), "/last.jsonl");
+    expect(lastOnly).toMatchObject({ inputTokens: 30, outputTokens: 5 });
+    const reset = parseCodexJsonl([
+      row("2026-07-01T23:59:00Z", { total_token_usage: { input_tokens: 100, output_tokens: 20 } }),
+      row("2026-07-02T00:01:00Z", { total_token_usage: { input_tokens: 10, output_tokens: 2 } }),
+    ].join("\n"), "/reset.jsonl");
+    expect(reset).toMatchObject({ inputTokens: 110, outputTokens: 22 });
+  });
+
+  it("keeps Cursor conversation identities distinct beyond a shared prefix and uses bubble days", () => {
+    const dbPath = join(tempRoot(), "state.vscdb");
+    const sqlite = new Database(dbPath);
+    sqlite.exec("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    const insert = sqlite.prepare("INSERT INTO cursorDiskKV VALUES (?, ?)");
+    for (const suffix of ["a", "b"]) {
+      for (const [day, input] of [["01", 11], ["02", 17]]) {
+        insert.run(`bubbleId:abcdefghijklmnopqrstuvwx-${suffix}:${day}`, JSON.stringify({ createdAt: `2026-07-${day}T00:00:00Z`, type: 2, tokenCount: { inputTokens: input, outputTokens: 7 } }));
+      }
+    }
+    sqlite.close();
+    process.env.CURSOR_STATE_DB = dbPath;
+    const sessions = readCursorTokenSessions();
+    expect(new Set(sessions.map((session) => session.id)).size).toBe(2);
+    expect(sessions[0]).toMatchObject({ dailyUsage: [
+      { date: "2026-07-01", inputTokens: 11, outputTokens: 7 },
+      { date: "2026-07-02", inputTokens: 17, outputTokens: 7 },
+    ] });
+  });
+
+  it("propagates invalid source-directory errors instead of presenting an empty snapshot", async () => {
+    const root = tempRoot();
+    writeFileSync(join(root, "projects"), "not a directory");
+    const old = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = root;
+    try { await expect(readLocalClaudeSessions()).rejects.toThrow(); }
+    finally { process.env.CLAUDE_CONFIG_DIR = old; }
+  });
+});
+
+it("uses the final Claude usage snapshot for a repeated assistant message", () => {
+  const rows = [2, 5].map((output_tokens) => JSON.stringify({ type: "assistant", timestamp: "2026-07-16T00:00:00Z", message: { id: "streamed-message", usage: { input_tokens: 10, output_tokens } } }));
+  expect(parseClaudeJsonl(rows.join("\n"), "/streamed.jsonl", new Set())).toMatchObject({ inputTokens: 10, outputTokens: 5, turnCount: 1 });
 });

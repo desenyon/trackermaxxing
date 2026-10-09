@@ -1,6 +1,8 @@
 import type { getUnifiedOverview } from "@/lib/ai/service";
 import type { getGithubActivityOverview, GithubLifetimeTotals } from "@/lib/github/activity";
 
+import { dailySeries } from "./series";
+
 type AiOverview = Awaited<ReturnType<typeof getUnifiedOverview>>;
 type GithubOverview = Awaited<ReturnType<typeof getGithubActivityOverview>>;
 
@@ -9,7 +11,7 @@ function svgBars(values: number[], color: string, width = 720, height = 120) {
   const max = Math.max(...values, 1);
   const barWidth = width / values.length;
   const bars = values.map((value, index) => {
-    const h = Math.max(2, (value / max) * (height - 16));
+    const h = Math.max(0, (value / max) * (height - 16));
     const x = index * barWidth;
     const y = height - h;
     return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, barWidth - 1).toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" rx="2" />`;
@@ -17,13 +19,13 @@ function svgBars(values: number[], color: string, width = 720, height = 120) {
   return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img">${bars}</svg>`;
 }
 
-function providerSeries(daily: AiOverview["daily"], provider: string) {
+function providerSeries(daily: AiOverview["daily"], provider: string, days: number) {
   const byDate = new Map<string, number>();
   for (const row of daily) {
     if (row.provider !== provider) continue;
     byDate.set(row.date, (byDate.get(row.date) ?? 0) + row.inputTokens + row.outputTokens);
   }
-  return [...byDate.keys()].sort().map((date) => byDate.get(date) ?? 0);
+  return dailySeries(byDate, days, 720);
 }
 
 export function renderHtmlReport(
@@ -43,7 +45,7 @@ export function renderHtmlReport(
   const providerCards = providers.map(({ id, label, color }) => {
     const row = ai.byProvider.find((entry) => entry.provider === id);
     const total = row?.totalTokens ?? 0;
-    const series = providerSeries(ai.daily, id).slice(-days);
+    const series = providerSeries(ai.daily, id, days);
     return `
       <section class="card">
         <header><h2>${label}</h2><p class="stat">${total.toLocaleString()} lifetime tokens</p></header>
@@ -51,8 +53,8 @@ export function renderHtmlReport(
       </section>`;
   }).join("");
 
-  const githubCommits = github.daily.slice(-days).map((row) => row.commits);
-  const githubPrs = github.daily.slice(-days).map((row) => row.prsOpened);
+  const githubCommits = dailySeries(new Map(github.daily.map((row) => [row.day, row.commits])), days, 720);
+  const githubPrs = dailySeries(new Map(github.daily.map((row) => [row.day, row.prsOpened])), days, 720);
 
   return `<!DOCTYPE html>
 <html lang="en">

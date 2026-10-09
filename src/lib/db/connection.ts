@@ -12,6 +12,7 @@ export function locateMigrationsFolder(moduleUrl = import.meta.url) {
   const moduleDirectory = dirname(fileURLToPath(moduleUrl));
   const candidates = [
     process.env.TRACKER_MIGRATIONS_PATH,
+    resolve(moduleDirectory, "drizzle"),
     resolve(moduleDirectory, "../../../drizzle"),
     resolve(moduleDirectory, "../drizzle"),
     resolve(process.cwd(), "drizzle"),

@@ -38,11 +38,20 @@ export function decryptSecret(value: string) {
   return Buffer.concat([decipher.update(Buffer.from(encrypted, "base64url")), decipher.final()]).toString("utf8");
 }
 
-export async function writeSecret(key: string, value: string) {
-  await db.insert(appSettings).values({ key, value: encryptSecret(value), updatedAt: new Date() }).onConflictDoUpdate({
-    target: appSettings.key,
-    set: { value: encryptSecret(value), updatedAt: new Date() },
+export function writeSecrets(values: Record<string, string>) {
+  db.transaction((tx) => {
+    for (const [key, plaintext] of Object.entries(values)) {
+      const value = encryptSecret(plaintext);
+      const updatedAt = new Date();
+      tx.insert(appSettings).values({ key, value, updatedAt }).onConflictDoUpdate({
+        target: appSettings.key, set: { value, updatedAt },
+      }).run();
+    }
   });
+}
+
+export async function writeSecret(key: string, value: string) {
+  writeSecrets({ [key]: value });
 }
 
 export async function readSecret(key: string) {

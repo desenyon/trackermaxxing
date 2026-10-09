@@ -1,30 +1,19 @@
 import { createHash } from "node:crypto";
-import { type Dirent, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
-export interface CodexSession {
-  id: string;
-  sessionPath: string;
-  firstActivity: Date;
-  lastActivity: Date;
-  model: string | null;
-  cwd: string | null;
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  reasoningTokens: number;
-  estimatedCostUsd: number;
-  turnCount: number;
-  sourceFileHash: string;
-}
+import { DailyUsage, emptyUsage, tokenNumber, type AiSession } from "@/lib/ai/session";
+import { listJsonlFiles, readJsonlContent } from "@/lib/ingestion/files";
+
+// Compatibility alias for existing consumers; all providers use AiSession.
+export type CodexSession = AiSession;
 
 type JsonRecord = Record<string, unknown>;
 
 const asRecord = (value: unknown): JsonRecord | null =>
   typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonRecord) : null;
 
-const asNumber = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+const asNumber = tokenNumber;
 
 function timestampFrom(record: JsonRecord): Date | null {
   for (const key of ["timestamp", "created_at", "time"]) {
@@ -38,11 +27,11 @@ function timestampFrom(record: JsonRecord): Date | null {
 }
 
 function priceTokens(model: string | null, input: number, cached: number, output: number): number {
-  // Conservative public API-equivalent defaults. Users can override pricing in Settings later.
+  // Fixed API-equivalent heuristics, not billing rates or plan charges.
   const rates = model?.includes("mini")
     ? { input: 0.4, cached: 0.1, output: 1.6 }
     : { input: 2.5, cached: 0.625, output: 10 };
-  return ((input - cached) * rates.input + cached * rates.cached + output * rates.output) / 1_000_000;
+  return ((input - Math.min(input, cached)) * rates.input + Math.min(input, cached) * rates.cached + output * rates.output) / 1_000_000;
 }
 
 export function parseCodexJsonl(content: string, sessionPath: string): CodexSession | null {
@@ -53,7 +42,9 @@ export function parseCodexJsonl(content: string, sessionPath: string): CodexSess
   let firstActivity: Date | null = null;
   let lastActivity: Date | null = null;
   let turnCount = 0;
-  let tokenUsage: JsonRecord | null = null;
+  const daily = new DailyUsage();
+  let previous = emptyUsage();
+  let pending = emptyUsage();
 
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -67,8 +58,8 @@ export function parseCodexJsonl(content: string, sessionPath: string): CodexSess
 
     const timestamp = timestampFrom(record);
     if (timestamp) {
-      firstActivity ??= timestamp;
-      lastActivity = timestamp;
+      if (!firstActivity || timestamp < firstActivity) firstActivity = timestamp;
+      if (!lastActivity || timestamp > lastActivity) lastActivity = timestamp;
     }
 
     const payload = asRecord(record.payload);
@@ -86,73 +77,71 @@ export function parseCodexJsonl(content: string, sessionPath: string): CodexSess
       cwd = typeof candidate.cwd === "string" ? candidate.cwd : cwd;
     }
 
-    if (recordType === "response_item") turnCount += 1;
+    if (recordType === "response_item") {
+      turnCount += 1;
+      if (timestamp ?? lastActivity) daily.add((timestamp ?? lastActivity)!, { turnCount: 1 });
+    }
 
     const eventPayload = asRecord(record.payload);
     const tokenInfo = asRecord(eventPayload?.info);
     if (record.type === "event_msg" && eventPayload?.type === "token_count") {
-      tokenUsage =
-        asRecord(tokenInfo?.total_token_usage) ??
-        asRecord(tokenInfo?.last_token_usage) ??
-        asRecord(eventPayload.total_token_usage) ??
-        asRecord(eventPayload.last_token_usage) ??
-        tokenUsage;
       const eventModel = eventPayload.model ?? tokenInfo?.model;
       model = typeof eventModel === "string" ? eventModel : model;
+      const total = asRecord(tokenInfo?.total_token_usage) ?? asRecord(eventPayload.total_token_usage);
+      const raw = total ?? asRecord(tokenInfo?.last_token_usage) ?? asRecord(eventPayload.last_token_usage);
+      const at = timestamp ?? lastActivity;
+      if (!raw || !at) continue;
+      const current = {
+        ...emptyUsage(),
+        inputTokens: asNumber(raw.input_tokens),
+        outputTokens: asNumber(raw.output_tokens),
+        cachedInputTokens: asNumber(raw.cached_input_tokens ?? raw.cache_read_input_tokens),
+        reasoningTokens: asNumber(raw.reasoning_tokens ?? raw.reasoning_output_tokens),
+      };
+      const delta = { ...current };
+      const fields = ["inputTokens", "outputTokens", "cachedInputTokens", "reasoningTokens"] as const;
+      if (total) {
+        // A lower cumulative input/output starts a new counter segment.
+        const reset = current.inputTokens < previous.inputTokens || current.outputTokens < previous.outputTokens;
+        for (const field of fields) delta[field] = Math.max(0, current[field] - (reset ? 0 : previous[field] + pending[field]));
+        previous = current;
+        pending = emptyUsage();
+      } else {
+        for (const field of fields) pending[field] += current[field];
+      }
+      delta.estimatedCostUsd = priceTokens(model, delta.inputTokens, delta.cachedInputTokens, delta.outputTokens);
+      daily.add(at, delta);
     }
   }
 
   if (!firstActivity || !lastActivity) return null;
 
-  const inputTokens = asNumber(tokenUsage?.input_tokens);
-  const cachedInputTokens = asNumber(tokenUsage?.cached_input_tokens ?? tokenUsage?.cache_read_input_tokens);
-  const outputTokens = asNumber(tokenUsage?.output_tokens);
-  const reasoningTokens = asNumber(tokenUsage?.reasoning_tokens ?? tokenUsage?.reasoning_output_tokens);
+  // Timestamp-free records use the last observed timestamp; a fully undated file is ignored.
+  if (daily.rows().length === 0) daily.add(firstActivity, {});
+  const missingTurns = turnCount - daily.totals().turnCount;
+  if (missingTurns > 0) daily.add(firstActivity, { turnCount: missingTurns });
+  const totals = daily.totals();
 
   const sourceFileHash = createHash("sha256").update(content).digest("hex");
   return {
-    // Forked and subagent sessions can share a Codex session_id. The file hash
-    // keeps database identity unique while preserving the source session prefix.
+    // Source label only; persistence derives stable identity from provider/path.
     id: `${sessionId}-${sourceFileHash.slice(0, 12)}`,
     sessionPath,
     firstActivity,
     lastActivity,
     model,
     cwd,
-    inputTokens,
-    outputTokens,
-    cachedInputTokens,
-    reasoningTokens,
-    estimatedCostUsd: priceTokens(model, inputTokens, cachedInputTokens, outputTokens),
+    ...totals,
     turnCount,
+    dailyUsage: daily.rows(),
     sourceFileHash,
   };
-}
-
-async function listJsonlFiles(directory: string): Promise<string[]> {
-  let entries: Dirent[];
-  try {
-    entries = await fs.readdir(directory, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
-
-  const nested = await Promise.all(
-    entries.map((entry) => {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) return listJsonlFiles(path);
-      return Promise.resolve(entry.isFile() && entry.name.endsWith(".jsonl") ? [path] : []);
-    }),
-  );
-  return nested.flat();
 }
 
 export async function readLocalCodexSessions(): Promise<CodexSession[]> {
   const codexHome = resolve(process.env.CODEX_HOME?.replace(/^~(?=$|\/)/, homedir()) ?? join(homedir(), ".codex"));
   const files = await listJsonlFiles(join(codexHome, "sessions"));
-  const sessions = await Promise.all(
-    files.map(async (file) => parseCodexJsonl(await fs.readFile(file, "utf8"), file)),
-  );
+  const sessions = [];
+  for (const file of files) sessions.push(parseCodexJsonl(await readJsonlContent(file), file));
   return sessions.filter((session): session is CodexSession => session !== null);
 }
